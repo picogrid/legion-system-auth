@@ -122,9 +122,22 @@ type Manifest struct {
 	OAuthConfig ManifestOAuthConfig `json:"oauth_config"`
 }
 
+type PermissionRequest struct {
+	// The resource type this permission applies to (e.g., "entity", "feed", "track", "integration")
+	ResourceType string `json:"resource_type"`
+	// The relation/role being requested (e.g., "viewer", "operator", "admin")
+	Relation string `json:"relation"`
+	// Human-readable description of why this permission is needed
+	Description string `json:"description"`
+}
+
 type ManifestOAuthConfig struct {
-	Scopes       []string `json:"scopes"`
-	RedirectURLs []string `json:"redirect_urls"`
+	// Legacy scopes (optional, for backward compatibility)
+	Scopes []string `json:"scopes,omitempty"`
+	// Permissions (preferred - replaces scopes)
+	Permissions []PermissionRequest `json:"permissions,omitempty"`
+	// OAuth redirect URLs - required for software integrations only
+	RedirectURLs []string `json:"redirect_urls,omitempty"`
 }
 
 type AppConfig struct {
@@ -582,15 +595,191 @@ func createManifestInteractively() Manifest {
 
 	redirect = ensureRedirectUriAvailable(redirect)
 
+	// Ask if they want to use permissions or legacy scopes
+	printColored("\nPermission Configuration", ColorCyan, false)
+	printInfo("Choose authorization method:")
+	fmt.Println("  1. Permissions (Recommended - fine-grained access control)")
+	fmt.Println("  2. Legacy Scopes (Deprecated - for backward compatibility)")
+
+	authChoice := inputPrompt("\nSelect (1 or 2) [1]: ")
+	if authChoice == "" {
+		authChoice = "1"
+	}
+
+	var permissions []PermissionRequest
+	var scopes []string
+
+	if authChoice == "1" {
+		// Use permissions
+		printColored("\nSelect permissions to grant:", ColorCyan, false)
+		permissions = selectPermissionsWithPresets()
+	} else {
+		// Use legacy scopes
+		printWarning("Using deprecated scopes. Consider migrating to permissions.")
+		scopes = []string{
+			"offline_access",
+			"entities:read",
+			"entities:write",
+			"feeds:read",
+			"feeds:write",
+			"tasking:read",
+			"tasking:write",
+			"organizations:read",
+		}
+	}
+
 	return Manifest{
 		Name:        name,
 		Version:     ver,
 		Description: desc,
 		OAuthConfig: ManifestOAuthConfig{
-			Scopes:       []string{"offline_access", "entities:read", "entities:write", "feeds:read", "feeds:write", "tasking:read", "tasking:write", "organizations:read"},
+			Permissions:  permissions,
+			Scopes:       scopes,
 			RedirectURLs: []string{redirect},
 		},
 	}
+}
+
+// ============================================================================
+// Permission Selection Helpers
+// ============================================================================
+
+func selectPermissions() []PermissionRequest {
+	availablePermissions := []struct {
+		ResourceType string
+		Relation     string
+		Description  string
+		Display      string
+	}{
+		{"org", "viewer", "Read organization information", "Org: Viewer"},
+		{"org", "operator", "Manage organization settings", "Org: Operator"},
+		{"org", "admin", "Full organization admin access", "Org: Admin"},
+		{"feed", "viewer", "Read feed data and telemetry", "Feed: Viewer"},
+		{"feed", "operator", "Manage feeds and data streams", "Feed: Operator"},
+		{"feed", "admin", "Full feed admin access", "Feed: Admin"},
+		{"entity", "viewer", "Read entity information", "Entity: Viewer"},
+		{"entity", "operator", "Create and manage entities", "Entity: Operator"},
+		{"entity", "admin", "Full entity admin access", "Entity: Admin"},
+		{"integration", "viewer", "Read integration information", "Integration: Viewer"},
+		{"integration", "operator", "Manage integrations", "Integration: Operator"},
+		{"integration", "admin", "Full integration admin access", "Integration: Admin"},
+		{"event", "viewer", "Read event information", "Event: Viewer"},
+		{"event", "operator", "Manage events", "Event: Operator"},
+		{"event", "admin", "Full event admin access", "Event: Admin"},
+		{"track", "viewer", "Read track information", "Track: Viewer"},
+		{"track", "operator", "Manage tracks", "Track: Operator"},
+		{"track", "admin", "Full track admin access", "Track: Admin"},
+	}
+
+	printInfo("Available permissions:")
+	for i, perm := range availablePermissions {
+		fmt.Printf("  %2d. %-25s (%s)\n", i+1, perm.Display, perm.Description)
+	}
+
+	printInfo("\nEnter permission numbers separated by commas (e.g., 1,2,3)")
+	printInfo("Or press Enter for default permissions (Operator access on all resources)")
+
+	selection := inputPrompt("Permissions: ")
+
+	var selectedPerms []PermissionRequest
+
+	if selection == "" {
+		// Default permissions - operator on all resource types
+		selectedPerms = getPermissionsForRelation("operator")
+	} else {
+		// Parse selected indices
+		indices := strings.Split(selection, ",")
+		seen := make(map[int]bool)
+
+		for _, idxStr := range indices {
+			idxStr = strings.TrimSpace(idxStr)
+			idx, err := strconv.Atoi(idxStr)
+			if err != nil || idx < 1 || idx > len(availablePermissions) {
+				printWarning(fmt.Sprintf("Invalid selection: %s", idxStr))
+				continue
+			}
+
+			if seen[idx] {
+				continue // Skip duplicates
+			}
+			seen[idx] = true
+
+			perm := availablePermissions[idx-1]
+			selectedPerms = append(selectedPerms, PermissionRequest{
+				ResourceType: perm.ResourceType,
+				Relation:     perm.Relation,
+				Description:  perm.Description,
+			})
+		}
+	}
+
+	printSuccess(fmt.Sprintf("Selected %d permissions:", len(selectedPerms)))
+	for _, perm := range selectedPerms {
+		fmt.Printf("  • %s:%s - %s\n", perm.ResourceType, perm.Relation, perm.Description)
+	}
+
+	return selectedPerms
+}
+
+func getPermissionsForRelation(relation string) []PermissionRequest {
+	resourceTypes := []struct {
+		Type        string
+		Description string
+	}{
+		{"org", "Organization access"},
+		{"feed", "Feed data access"},
+		{"entity", "Entity access"},
+		{"integration", "Integration access"},
+		{"event", "Event access"},
+		{"track", "Track access"},
+	}
+
+	var permissions []PermissionRequest
+	for _, rt := range resourceTypes {
+		permissions = append(permissions, PermissionRequest{
+			ResourceType: rt.Type,
+			Relation:     relation,
+			Description:  fmt.Sprintf("%s (%s)", rt.Description, relation),
+		})
+	}
+	return permissions
+}
+
+func selectPermissionsWithPresets() []PermissionRequest {
+	printColored("\nSelect Access Level:", ColorCyan, false)
+	fmt.Println("  1. Viewer   - Read-only access to all resources")
+	fmt.Println("  2. Operator - Create and manage resources")
+	fmt.Println("  3. Admin    - Full administrative access")
+	fmt.Println("  4. Custom   - Select individual permissions")
+
+	choice := inputPrompt("\nSelect access level (1-4) [2]: ")
+	if choice == "" {
+		choice = "2"
+	}
+
+	var permissions []PermissionRequest
+	switch choice {
+	case "1":
+		permissions = getPermissionsForRelation("viewer")
+		printSuccess("Selected: Viewer access")
+	case "2":
+		permissions = getPermissionsForRelation("operator")
+		printSuccess("Selected: Operator access")
+	case "3":
+		permissions = getPermissionsForRelation("admin")
+		printSuccess("Selected: Admin access")
+	case "4":
+		return selectPermissions()
+	default:
+		printWarning("Invalid choice, using Operator access")
+		permissions = getPermissionsForRelation("operator")
+	}
+
+	for _, perm := range permissions {
+		fmt.Printf("  • %s:%s\n", perm.ResourceType, perm.Relation)
+	}
+
+	return permissions
 }
 
 func createIntegration(apiURL, token, orgID string, manifest Manifest) (*Integration, error) {
