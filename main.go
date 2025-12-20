@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -162,6 +163,16 @@ type EntitySearchResult struct {
 	TotalCount interface{}              `json:"total_count"`
 }
 
+// HTTPError represents an HTTP error response with status code
+type HTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, e.Body)
+}
+
 // ============================================================================
 // Utility Functions
 // ============================================================================
@@ -282,7 +293,7 @@ func makeRequest(method, urlStr string, data interface{}, headers map[string]str
 	}
 
 	if resp.StatusCode >= 400 {
-		return respBody, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		return respBody, &HTTPError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	return respBody, nil
@@ -1231,7 +1242,8 @@ func interactiveSetup(createEntity bool) {
 	printInfo("\nCreating integration...")
 	integ, err := createIntegration(apiURL, token, org.OrganizationID, manifest)
 	if err != nil {
-		if strings.Contains(err.Error(), "409") {
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
 			printWarning("Integration exists.")
 			integ = selectExistingIntegrationPaginated(apiURL, token, org.OrganizationID)
 		} else {
@@ -1330,7 +1342,9 @@ func interactiveSetup(createEntity bool) {
 	}
 }
 
-func fetchEntityByName(apiURL, orgID, token, name string) map[string]interface{} {
+var errEntityNotFound = fmt.Errorf("entity not found")
+
+func fetchEntityByName(apiURL, orgID, token, name string) (map[string]interface{}, error) {
 	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
 
 	// Search for entity by name using POST /v3/entities/search
@@ -1342,16 +1356,14 @@ func fetchEntityByName(apiURL, orgID, token, name string) map[string]interface{}
 
 	var result EntitySearchResult
 	if err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities/search", apiURL), searchPayload, headers, &result); err != nil {
-		printError(fmt.Sprintf("Failed to search entities: %v", err))
-		return nil
+		return nil, fmt.Errorf("failed to search entities: %w", err)
 	}
 
 	if len(result.Results) == 0 {
-		printError("Entity not found.")
-		return nil
+		return nil, errEntityNotFound
 	}
 
-	return result.Results[0]
+	return result.Results[0], nil
 }
 
 func createTerminalEntity(apiURL, orgID, integID, token string) {
@@ -1392,25 +1404,34 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 	var resp map[string]interface{}
 	err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities", apiURL), payload, headers, &resp)
 	if err != nil {
-		if strings.Contains(err.Error(), "409") {
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
 			printWarning("Entity already exists. Fetching existing entity...")
 			entityName := strings.ToUpper(sn)
-			if fetchedEntity := fetchEntityByName(apiURL, orgID, token, entityName); fetchedEntity != nil {
-				printSuccess("Retrieved existing terminal entity!")
-				if err := saveJSON(TerminalEntityFile, fetchedEntity); err != nil {
-					printError(fmt.Sprintf("Failed to save terminal entity: %v", err))
-				}
+			fetchedEntity, fetchErr := fetchEntityByName(apiURL, orgID, token, entityName)
+			if fetchErr != nil {
+				printError(fmt.Sprintf("Failed to fetch existing entity: %v", fetchErr))
+				printError("Terminal entity setup failed. The entity exists but could not be retrieved.")
+				return
 			}
+			if saveErr := saveJSON(TerminalEntityFile, fetchedEntity); saveErr != nil {
+				printError(fmt.Sprintf("Failed to save terminal entity: %v", saveErr))
+				printError("Terminal entity setup failed. The entity was retrieved but could not be saved.")
+				return
+			}
+			printSuccess("Retrieved and saved existing terminal entity!")
 			return
 		}
-		printError(fmt.Sprintf("Failed: %v", err))
+		printError(fmt.Sprintf("Failed to create terminal entity: %v", err))
 		return
 	}
 
-	printSuccess("Terminal Entity Created!")
 	if err := saveJSON(TerminalEntityFile, resp); err != nil {
 		printError(fmt.Sprintf("Failed to save terminal entity: %v", err))
+		printError("Terminal entity was created but could not be saved locally.")
+		return
 	}
+	printSuccess("Terminal Entity Created!")
 }
 
 // ============================================================================
