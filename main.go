@@ -1325,6 +1325,34 @@ func interactiveSetup(createEntity bool) {
 	}
 }
 
+func searchEntityByName(apiURL, token, orgID, entityName string) (map[string]interface{}, error) {
+	headers := map[string]string{
+		"Authorization": "Bearer " + token,
+		"X-ORG-ID":      orgID,
+		"Content-Type":  "application/json",
+	}
+
+	payload := map[string]interface{}{
+		"organization_id": orgID,
+		"filters": map[string]string{
+			"name": entityName,
+		},
+	}
+
+	var resp struct {
+		Results []map[string]interface{} `json:"results"`
+	}
+	err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities/search", apiURL), payload, headers, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(resp.Results) > 0 {
+		return resp.Results[0], nil
+	}
+	return nil, nil
+}
+
 func createTerminalEntity(apiURL, orgID, integID, token string) {
 	printColored("\n→ Creating terminal entity...", ColorCyan, true)
 
@@ -1360,15 +1388,26 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 
 	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
 
-	var resp map[string]interface{}
-	err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities", apiURL), payload, headers, &resp)
+	var entity map[string]interface{}
+	err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities", apiURL), payload, headers, &entity)
 	if err != nil {
-		printError(fmt.Sprintf("Failed: %v", err))
-		return
+		if !strings.Contains(err.Error(), "409") {
+			printError(fmt.Sprintf("Failed: %v", err))
+			return
+		}
+
+		printWarning("Entity already exists. Fetching...")
+		entity, _ = searchEntityByName(apiURL, token, orgID, strings.ToUpper(sn))
+		if entity == nil {
+			printError("Could not fetch existing entity.")
+			return
+		}
+		printSuccess("Found existing entity!")
+	} else {
+		printSuccess("Terminal Entity Created!")
 	}
 
-	printSuccess("Terminal Entity Created!")
-	if err := saveJSON(TerminalEntityFile, resp); err != nil {
+	if err := saveJSON(TerminalEntityFile, entity); err != nil {
 		printError(fmt.Sprintf("Failed to save terminal entity: %v", err))
 	}
 }
