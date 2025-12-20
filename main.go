@@ -157,6 +157,11 @@ type PagedIntegrations struct {
 	Offset       int           `json:"offset"`
 }
 
+type EntitySearchResult struct {
+	Results    []map[string]interface{} `json:"results"`
+	TotalCount interface{}              `json:"total_count"`
+}
+
 // ============================================================================
 // Utility Functions
 // ============================================================================
@@ -1325,6 +1330,30 @@ func interactiveSetup(createEntity bool) {
 	}
 }
 
+func fetchEntityByName(apiURL, orgID, token, name string) map[string]interface{} {
+	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
+
+	// Search for entity by name using POST /v3/entities/search
+	searchPayload := map[string]interface{}{
+		"filters": map[string]string{
+			"name": name,
+		},
+	}
+
+	var result EntitySearchResult
+	if err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities/search", apiURL), searchPayload, headers, &result); err != nil {
+		printError(fmt.Sprintf("Failed to search entities: %v", err))
+		return nil
+	}
+
+	if len(result.Results) == 0 {
+		printError("Entity not found.")
+		return nil
+	}
+
+	return result.Results[0]
+}
+
 func createTerminalEntity(apiURL, orgID, integID, token string) {
 	printColored("\n→ Creating terminal entity...", ColorCyan, true)
 
@@ -1363,6 +1392,17 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 	var resp map[string]interface{}
 	err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities", apiURL), payload, headers, &resp)
 	if err != nil {
+		if strings.Contains(err.Error(), "409") {
+			printWarning("Entity already exists. Fetching existing entity...")
+			entityName := strings.ToUpper(sn)
+			if fetchedEntity := fetchEntityByName(apiURL, orgID, token, entityName); fetchedEntity != nil {
+				printSuccess("Retrieved existing terminal entity!")
+				if err := saveJSON(TerminalEntityFile, fetchedEntity); err != nil {
+					printError(fmt.Sprintf("Failed to save terminal entity: %v", err))
+				}
+			}
+			return
+		}
 		printError(fmt.Sprintf("Failed: %v", err))
 		return
 	}
