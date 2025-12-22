@@ -108,33 +108,51 @@ fi
 
 echo "$CHECKMARK Download complete"
 
-# Optional: Verify checksum if available
+# Verify checksum with retry (handles GitHub CDN propagation delays)
 echo ""
 echo "$ARROW Verifying integrity..."
 CHECKSUM_URL="${DOWNLOAD_URL}.sha256"
-if curl -sL ${GITHUB_TOKEN:+-H "Authorization: token $GITHUB_TOKEN"} "$CHECKSUM_URL" -o "$TMP_DIR/${ASSET_NAME}.sha256" 2>/dev/null; then
+
+verify_checksum() {
     if command -v sha256sum &> /dev/null; then
-        if (cd "$TMP_DIR" && sha256sum -c "${ASSET_NAME}.sha256" 2>&1 | grep -q "OK"); then
-            echo "$LOCK Checksum verified"
-        else
-            echo ""
-            echo "$CROSS Error: Checksum verification failed"
-            exit 1
-        fi
+        (cd "$TMP_DIR" && sha256sum -c "${ASSET_NAME}.sha256" 2>&1 | grep -q "OK")
     elif command -v shasum &> /dev/null; then
-        if (cd "$TMP_DIR" && shasum -a 256 -c "${ASSET_NAME}.sha256" 2>&1 | grep -q "OK"); then
-            echo "$LOCK Checksum verified"
-        else
-            echo ""
-            echo "$CROSS Error: Checksum verification failed"
-            exit 1
-        fi
+        (cd "$TMP_DIR" && shasum -a 256 -c "${ASSET_NAME}.sha256" 2>&1 | grep -q "OK")
     else
         echo "⚠  Warning: Neither sha256sum nor shasum found, skipping checksum verification"
+        return 0
     fi
-else
-    echo "⚠  Warning: No checksum file found, skipping verification"
-fi
+}
+
+MAX_RETRIES=3
+RETRY_DELAY=2
+
+for attempt in $(seq 1 $MAX_RETRIES); do
+    # Download checksum file (fresh each attempt to handle CDN propagation)
+    if ! curl -sL ${GITHUB_TOKEN:+-H "Authorization: token $GITHUB_TOKEN"} "$CHECKSUM_URL" -o "$TMP_DIR/${ASSET_NAME}.sha256" 2>/dev/null; then
+        echo "⚠  Warning: No checksum file found, skipping verification"
+        break
+    fi
+
+    if verify_checksum; then
+        echo "$LOCK Checksum verified"
+        break
+    else
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            echo "  Checksum mismatch, retrying in ${RETRY_DELAY}s... (attempt $attempt/$MAX_RETRIES)"
+            sleep $RETRY_DELAY
+            # Re-download binary on retry (CDN may have been serving stale content)
+            curl -sL "$DOWNLOAD_URL" -o "$TMP_DIR/$ASSET_NAME" 2>/dev/null
+            RETRY_DELAY=$((RETRY_DELAY * 2))
+        else
+            echo ""
+            echo "$CROSS Error: Checksum verification failed after $MAX_RETRIES attempts"
+            echo "  This may indicate a corrupted download or CDN cache issue."
+            echo "  Please try again in a few minutes."
+            exit 1
+        fi
+    fi
+done
 
 # Install (rename to generic binary name during installation)
 echo ""
