@@ -74,7 +74,12 @@ var (
 
 func init() {
 	if g := os.Getenv("LEGION_AUTH_FILE_GID"); g != "" {
-		if parsed, err := strconv.Atoi(g); err == nil {
+		parsed, err := strconv.Atoi(g)
+		if err != nil {
+			log.Printf("Warning: LEGION_AUTH_FILE_GID=%q is not a valid integer, ignoring", g)
+		} else if parsed < 0 {
+			log.Printf("Warning: LEGION_AUTH_FILE_GID=%d must be non-negative, ignoring", parsed)
+		} else {
 			fileGID = parsed
 		}
 	}
@@ -1122,7 +1127,7 @@ func saveJSON(path string, data interface{}) error {
 	// Set group ownership if configured via LEGION_AUTH_FILE_GID
 	if fileGID >= 0 {
 		if err := os.Chown(path, -1, fileGID); err != nil {
-			logger.Printf("Failed to set group on %s: %v", path, err)
+			return fmt.Errorf("failed to set group ownership on %s: %w", path, err)
 		}
 	}
 
