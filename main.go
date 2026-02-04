@@ -1141,17 +1141,18 @@ func saveJSON(path string, data interface{}) error {
 func shouldRefreshToken() bool {
 	content, err := os.ReadFile(AccessTokenFile)
 	if err != nil {
-		return false
+		// File missing or unreadable — need a fresh token
+		return true
 	}
 
 	var t StoredToken
 	if json.Unmarshal(content, &t) != nil {
-		return false
+		return true
 	}
 
 	expires, err := time.Parse(time.RFC3339, t.ExpiresAt)
 	if err != nil {
-		return false
+		return true
 	}
 
 	remaining := time.Until(expires)
