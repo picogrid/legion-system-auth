@@ -415,6 +415,23 @@ func setOwnership(path string) {
 		logger.Warn("failed to chmod", slog.String("path", path), slog.String("error", err.Error()))
 	}
 
+	// Also chown all files inside the directory so the pg user can read them
+	// (fixes root-owned files left by sudo runs)
+	entries, err := os.ReadDir(path)
+	if err == nil {
+		for _, e := range entries {
+			fp := filepath.Join(path, e.Name())
+			if chErr := os.Chown(fp, uid, gid); chErr != nil {
+				logger.Warn("failed to chown file", slog.String("path", fp), slog.String("error", chErr.Error()))
+			}
+			if !e.IsDir() {
+				if chErr := os.Chmod(fp, 0640); chErr != nil {
+					logger.Warn("failed to chmod file", slog.String("path", fp), slog.String("error", chErr.Error()))
+				}
+			}
+		}
+	}
+
 	parent := filepath.Dir(path)
 	if _, err := os.Stat(parent); err == nil {
 		if err := os.Chown(parent, uid, gid); err != nil {
@@ -1645,6 +1662,8 @@ After=network.target
 ExecStart=%s --storage-path %s
 Restart=always
 RestartSec=10
+Environment=PG_OTEL_ENABLED=true
+Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 
 [Install]
 WantedBy=default.target
@@ -1667,6 +1686,8 @@ Restart=always
 RestartSec=10
 User=%s
 Group=%s
+Environment=PG_OTEL_ENABLED=true
+Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 
 [Install]
 WantedBy=multi-user.target
@@ -1750,6 +1771,13 @@ WantedBy=multi-user.target
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PG_OTEL_ENABLED</key>
+        <string>true</string>
+        <key>OTEL_EXPORTER_OTLP_ENDPOINT</key>
+        <string>http://localhost:4318</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>%s</string>
     <key>StandardErrorPath</key>
