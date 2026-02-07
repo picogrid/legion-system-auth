@@ -78,7 +78,24 @@ var (
 
 	// Shutdown signal
 	shutdownChan = make(chan struct{})
+
+	// File permissions (env: LEGION_AUTH_FILE_GID)
+	filePermissions os.FileMode = 0640
+	fileGID                     = -1
 )
+
+func init() {
+	if g := os.Getenv("LEGION_AUTH_FILE_GID"); g != "" {
+		parsed, err := strconv.Atoi(g)
+		if err != nil {
+			slog.Warn("LEGION_AUTH_FILE_GID is not a valid integer, ignoring", slog.String("value", g))
+		} else if parsed < 0 {
+			slog.Warn("LEGION_AUTH_FILE_GID must be non-negative, ignoring", slog.Int("value", parsed))
+		} else {
+			fileGID = parsed
+		}
+	}
+}
 
 // ============================================================================
 // Data Structures
@@ -1123,14 +1140,21 @@ func saveJSON(path string, data interface{}) error {
 		return fmt.Errorf("failed to marshal data: %w", err)
 	}
 
-	// Write with 0600 permissions
-	if err := os.WriteFile(path, file, 0600); err != nil {
+	// Write with configured permissions (default 0640)
+	if err := os.WriteFile(path, file, filePermissions); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", path, err)
 	}
 
-	// Explicitly set permissions to ensure it sticks (overriding umask if needed, though WriteFile handles it mostly)
-	if err := os.Chmod(path, 0600); err != nil {
+	// Explicitly set permissions to ensure it sticks (overriding umask if needed)
+	if err := os.Chmod(path, filePermissions); err != nil {
 		return fmt.Errorf("failed to set file permissions for %s: %w", path, err)
+	}
+
+	// Set group ownership if configured via LEGION_AUTH_FILE_GID
+	if fileGID >= 0 {
+		if err := os.Chown(path, -1, fileGID); err != nil {
+			return fmt.Errorf("failed to set group ownership on %s: %w", path, err)
+		}
 	}
 
 	return nil
@@ -1143,17 +1167,18 @@ func saveJSON(path string, data interface{}) error {
 func shouldRefreshToken() bool {
 	content, err := os.ReadFile(AccessTokenFile)
 	if err != nil {
-		return false
+		// File missing or unreadable — need a fresh token
+		return true
 	}
 
 	var t StoredToken
 	if json.Unmarshal(content, &t) != nil {
-		return false
+		return true
 	}
 
 	expires, err := time.Parse(time.RFC3339, t.ExpiresAt)
 	if err != nil {
-		return false
+		return true
 	}
 
 	remaining := time.Until(expires)
