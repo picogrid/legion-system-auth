@@ -425,7 +425,7 @@ func setOwnership(path string) {
 				logger.Warn("failed to chown file", slog.String("path", fp), slog.String("error", chErr.Error()))
 			}
 			if !e.IsDir() {
-				if chErr := os.Chmod(fp, 0640); chErr != nil {
+				if chErr := os.Chmod(fp, 0644); chErr != nil {
 					logger.Warn("failed to chmod file", slog.String("path", fp), slog.String("error", chErr.Error()))
 				}
 			}
