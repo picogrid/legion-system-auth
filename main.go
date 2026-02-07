@@ -12,7 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,10 +22,13 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	pgtel "legion-auth-go/internal/otel"
 
 	"golang.org/x/term"
 )
@@ -61,8 +64,17 @@ var (
 	TerminalEntityFile string
 	LegionOAuthPath    string
 
-	// Global logger
-	logger *log.Logger
+	// Structured logger (JSON to stdout)
+	logger *slog.Logger
+
+	// Instrumented HTTP client (OTel tracing on all outbound requests)
+	httpClient *http.Client
+
+	// OTel providers (nil-safe — Shutdown is safe to call when nil)
+	otelProviders *pgtel.Providers
+
+	// Legion metrics (nil-safe — Set*/Record* methods are nil-receiver safe)
+	legionMetrics *pgtel.LegionMetrics
 
 	// Shutdown signal
 	shutdownChan = make(chan struct{})
@@ -242,7 +254,7 @@ func readPasswordSimple(prompt string) string {
 }
 
 func makeRequest(method, urlStr string, data interface{}, headers map[string]string) ([]byte, error) {
-	logger.Printf("Making %s request to %s", method, urlStr)
+	logger.Debug("HTTP request", slog.String("method", method), slog.String("url", urlStr))
 
 	var body io.Reader
 	if data != nil {
@@ -278,10 +290,7 @@ func makeRequest(method, urlStr string, data interface{}, headers map[string]str
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +384,7 @@ func setupStorage(customPath string) error {
 		_ = os.Remove(LegionOAuthPath)
 	}
 	if err := os.Symlink(StoragePath, LegionOAuthPath); err != nil {
-		logger.Printf("Failed to create symlink (non-fatal): %v", err)
+		logger.Warn("failed to create symlink (non-fatal)", slog.String("error", err.Error()))
 	}
 	return nil
 }
@@ -383,39 +392,39 @@ func setupStorage(customPath string) error {
 func setOwnership(path string) {
 	pgUser, err := user.Lookup("pg")
 	if err != nil {
-		logger.Printf("User 'pg' not found, keeping default ownership")
+		logger.Debug("user 'pg' not found, keeping default ownership")
 		return
 	}
 
 	uid, err := strconv.Atoi(pgUser.Uid)
 	if err != nil {
-		logger.Printf("Failed to parse pg user UID: %v", err)
+		logger.Warn("failed to parse pg user UID", slog.String("error", err.Error()))
 		return
 	}
 	gid, err := strconv.Atoi(pgUser.Gid)
 	if err != nil {
-		logger.Printf("Failed to parse pg user GID: %v", err)
+		logger.Warn("failed to parse pg user GID", slog.String("error", err.Error()))
 		return
 	}
 
 	if err := os.Chown(path, uid, gid); err != nil {
-		logger.Printf("Insufficient permissions to chown %s: %v", path, err)
+		logger.Warn("insufficient permissions to chown", slog.String("path", path), slog.String("error", err.Error()))
 		return
 	}
 	if err := os.Chmod(path, 0755); err != nil {
-		logger.Printf("Failed to chmod %s: %v", path, err)
+		logger.Warn("failed to chmod", slog.String("path", path), slog.String("error", err.Error()))
 	}
 
 	parent := filepath.Dir(path)
 	if _, err := os.Stat(parent); err == nil {
 		if err := os.Chown(parent, uid, gid); err != nil {
-			logger.Printf("Failed to chown parent %s: %v", parent, err)
+			logger.Warn("failed to chown parent", slog.String("path", parent), slog.String("error", err.Error()))
 		}
 		if err := os.Chmod(parent, 0755); err != nil {
-			logger.Printf("Failed to chmod parent %s: %v", parent, err)
+			logger.Warn("failed to chmod parent", slog.String("path", parent), slog.String("error", err.Error()))
 		}
 	}
-	logger.Printf("Set ownership of %s and parent to pg user", path)
+	logger.Info("set ownership to pg user", slog.String("path", path))
 }
 
 func ensureRedirectUriAvailable(redirectURI string) string {
@@ -443,7 +452,7 @@ func ensureRedirectUriAvailable(redirectURI string) string {
 
 		parsed.Host = net.JoinHostPort(host, port)
 		newURI := parsed.String()
-		logger.Printf("Port in use, switching to %s", newURI)
+		logger.Info("port in use, switching redirect URI", slog.String("new_uri", newURI))
 		return newURI
 	}
 	return redirectURI
@@ -954,14 +963,14 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 
 	go func() {
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			logger.Printf("Server error: %v", err)
+			logger.Error("OAuth callback server error", slog.String("error", err.Error()))
 		}
 	}()
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
-			logger.Printf("Server shutdown error: %v", err)
+			logger.Warn("OAuth callback server shutdown error", slog.String("error", err.Error()))
 		}
 	}()
 
@@ -1014,7 +1023,7 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 	if err != nil {
 		// It might fail if the client can't connect to localhost (e.g. invalid certs or something),
 		// but typically it succeeds or at least the server gets hit.
-		logger.Printf("Auth request finished (err=%v)", err)
+		logger.Debug("auth request finished", slog.String("error", err.Error()))
 	} else {
 		_ = resp.Body.Close()
 	}
@@ -1440,7 +1449,13 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 
 func main() {
 
-	logger = log.New(os.Stdout, "", log.LstdFlags)
+	logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+	slog.SetDefault(logger)
+
+	// Default plain HTTP client (replaced with instrumented client in daemon mode)
+	httpClient = &http.Client{Timeout: 30 * time.Second}
 
 	setupCmd := flag.NewFlagSet("setup", flag.ExitOnError)
 	createEntityFlag := setupCmd.Bool("create-entity", false, "Create terminal entity during setup")
@@ -1565,15 +1580,40 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize OpenTelemetry (metrics + traces)
+	otelCfg := pgtel.ConfigFromEnv(Version)
+	var err error
+	otelProviders, err = pgtel.Init(context.Background(), otelCfg)
+	if err != nil {
+		logger.Warn("OTel init failed, metrics/traces disabled", slog.String("error", err.Error()))
+		otelProviders = &pgtel.Providers{}
+	} else if otelCfg.Enabled {
+		logger.Info("OTel initialized", slog.String("endpoint", otelCfg.Endpoint), slog.String("service", otelCfg.ServiceName))
+	}
+
+	// Replace HTTP client with instrumented version (tracing on all outbound requests)
+	httpClient = pgtel.NewHTTPClient()
+
+	// Register legion metrics (observable gauges + counters)
+	legionMetrics, err = pgtel.NewLegionMetrics(otelProviders.Meter())
+	if err != nil {
+		logger.Warn("failed to register legion metrics", slog.String("error", err.Error()))
+	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		<-sigChan
-		printWarning("\nShutting down...")
+		logger.Info("shutdown initiated")
 		close(shutdownChan)
 
-		// Force exit after timeout if the main thread is blocked (e.g., input prompt)
+		// Flush all telemetry before exit
+		if shutdownErr := otelProviders.Shutdown(context.Background()); shutdownErr != nil {
+			logger.Error("OTel shutdown error", slog.String("error", shutdownErr.Error()))
+		}
+
+		// Force exit after timeout if the main thread is blocked
 		<-time.After(2 * time.Second)
 		os.Exit(0)
 	}()
@@ -1824,9 +1864,16 @@ func uninstallService(userLevel bool) error {
 }
 
 func runTokenMonitoring() {
-	printColored("\n» Legion Authentication Service", ColorBlue, true)
-	printColored("==================================================", ColorGray, false)
-	printInfo(fmt.Sprintf("Storage path: %s", StoragePath))
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("panic in token monitoring", slog.Any("panic", r), slog.String("stack", string(debug.Stack())))
+		}
+	}()
+
+	logger.Info("legion authentication service starting",
+		slog.String("version", Version),
+		slog.String("storage_path", StoragePath),
+	)
 
 	if _, err := os.Stat(ConfigFile); os.IsNotExist(err) {
 		printInfo("No configuration found. Running setup...")
@@ -1837,17 +1884,21 @@ func runTokenMonitoring() {
 		}
 	}
 
+	// Load config/terminal info and feed metrics (matches edge-monitor's legion_config_loop)
+	loadConfigMetrics()
+	loadTerminalMetrics()
+
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 
 	checkAndRefreshToken()
 
-	printColored("\n→ Starting token monitoring service...", ColorCyan, true)
-	printInfo("Service will run indefinitely. Press Ctrl+C to stop.")
+	logger.Info("token monitoring started, checking every 2m")
 
 	for {
 		select {
 		case <-shutdownChan:
+			logger.Info("token monitoring stopped")
 			return
 		case <-ticker.C:
 			checkAndRefreshToken()
@@ -1855,10 +1906,100 @@ func runTokenMonitoring() {
 	}
 }
 
+// loadConfigMetrics reads oauth_config.json and updates legion_info gauge.
+func loadConfigMetrics() {
+	if legionMetrics == nil {
+		return
+	}
+	content, err := os.ReadFile(ConfigFile)
+	if err != nil {
+		return
+	}
+	var config AppConfig
+	if json.Unmarshal(content, &config) != nil {
+		return
+	}
+	if config.LegionBaseURL != "" || config.OrganizationID != "" {
+		legionMetrics.SetConfig(config.LegionBaseURL, config.OrganizationID)
+		logger.Info("legion config loaded for metrics",
+			slog.String("base_url", config.LegionBaseURL),
+			slog.String("organization_id", config.OrganizationID),
+		)
+	}
+}
+
+// loadTerminalMetrics reads terminal_entity.json and updates legion_terminal_info gauge.
+func loadTerminalMetrics() {
+	if legionMetrics == nil {
+		return
+	}
+	content, err := os.ReadFile(TerminalEntityFile)
+	if err != nil {
+		return
+	}
+	var entity map[string]interface{}
+	if json.Unmarshal(content, &entity) != nil {
+		return
+	}
+	entityID := ""
+	if id, ok := entity["id"]; ok {
+		entityID = fmt.Sprintf("%v", id)
+	} else if id, ok := entity["entity_id"]; ok {
+		entityID = fmt.Sprintf("%v", id)
+	}
+	serial := ""
+	terminalType := ""
+	if meta, ok := entity["metadata"].(map[string]interface{}); ok {
+		if s, ok := meta["serial_number"].(string); ok {
+			serial = s
+		}
+		if t, ok := meta["terminal_type"].(string); ok {
+			terminalType = t
+		}
+	}
+	if entityID != "" {
+		legionMetrics.SetTerminal(entityID, serial, terminalType)
+		logger.Info("legion terminal loaded for metrics",
+			slog.String("entity_id", entityID),
+			slog.String("serial_number", serial),
+			slog.String("terminal_type", terminalType),
+		)
+	}
+}
+
+// updateTokenMetrics reads the current token expiry and feeds the metric.
+func updateTokenMetrics() {
+	if legionMetrics == nil {
+		return
+	}
+	content, err := os.ReadFile(AccessTokenFile)
+	if err != nil {
+		return
+	}
+	var t StoredToken
+	if json.Unmarshal(content, &t) != nil {
+		return
+	}
+	expires, err := time.Parse(time.RFC3339, t.ExpiresAt)
+	if err != nil {
+		return
+	}
+	legionMetrics.SetTokenExpiry(float64(expires.Unix()))
+}
+
 func checkAndRefreshToken() {
 	if shouldRefreshToken() {
-		refreshAccessToken()
+		if refreshAccessToken() {
+			if legionMetrics != nil {
+				legionMetrics.RecordRefreshSuccess()
+			}
+		} else {
+			if legionMetrics != nil {
+				legionMetrics.RecordRefreshError()
+			}
+		}
 	} else {
-		logger.Println("Token valid.")
+		logger.Info("token valid")
 	}
+	updateTokenMetrics()
 }
