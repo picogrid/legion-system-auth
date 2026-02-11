@@ -1652,6 +1652,16 @@ WantedBy=default.target
 			printInfo(fmt.Sprintf("Installing user-level systemd service to %s...", servicePath))
 		} else {
 			// System-level service (requires sudo)
+			account, err := user.Lookup(serviceUser)
+			if err != nil {
+				return fmt.Errorf("service user %q does not exist: %w (create it with: useradd --system --no-create-home %s)", serviceUser, err, serviceUser)
+			}
+
+			serviceGroup := account.Gid
+			if group, err := user.LookupGroupId(account.Gid); err == nil {
+				serviceGroup = group.Name
+			}
+
 			serviceContent = fmt.Sprintf(`[Unit]
 Description=Legion Authentication Service
 After=network.target
@@ -1665,7 +1675,7 @@ Group=%s
 
 [Install]
 WantedBy=multi-user.target
-`, exePath, storagePath, serviceUser, serviceUser)
+`, exePath, storagePath, serviceUser, serviceGroup)
 
 			servicePath = "/etc/systemd/system/legion-auth.service"
 			systemctlArgs = []string{}
