@@ -1502,7 +1502,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "        Flags:")
 		fmt.Fprintln(os.Stderr, "          --user           Install as user-level service (no sudo required)")
 		fmt.Fprintln(os.Stderr, "          --storage-path   Custom storage path")
-		fmt.Fprintln(os.Stderr, "          --service-user   User to run service as (Linux system-level only, default: root)")
+		fmt.Fprintln(os.Stderr, "          --service-user   User to run service as (Linux system-level only, default: pg if exists, else root)")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  uninstall-service")
 		fmt.Fprintln(os.Stderr, "        Uninstall the service (systemd/Launchd)")
