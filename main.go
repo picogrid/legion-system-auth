@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"golang.org/x/term"
+	"legion-auth-go/pkg/install"
 )
 
 // ============================================================================
@@ -433,13 +434,6 @@ func setOwnership(path string) {
 		}
 	}
 	logger.Printf("Set ownership of %s and parent to pg user", path)
-}
-
-func defaultServiceUser() string {
-	if _, err := user.Lookup("pg"); err == nil {
-		return "pg"
-	}
-	return "root"
 }
 
 func ensureRedirectUriAvailable(redirectURI string) string {
@@ -1556,7 +1550,7 @@ func main() {
 				os.Exit(1)
 			}
 			if *installServiceUser == "" {
-				*installServiceUser = defaultServiceUser()
+				*installServiceUser = install.DefaultServiceUser()
 			}
 
 			// Setup storage first to ensure paths match defaults if not provided

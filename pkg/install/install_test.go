@@ -1,4 +1,4 @@
-package main
+package install
 
 import (
 	"fmt"
@@ -20,20 +20,20 @@ func TestInstallDefaultServiceUser(t *testing.T) {
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				t.Fatalf("defaultServiceUser() panicked: %v", r)
+				t.Fatalf("DefaultServiceUser() panicked: %v", r)
 			}
 		}()
-		got = defaultServiceUser()
+		got = DefaultServiceUser()
 	}()
 
 	if pgErr == nil {
 		if got != "pg" {
-			t.Fatalf("defaultServiceUser() = %q, want %q when user \"pg\" exists", got, "pg")
+			t.Fatalf("DefaultServiceUser() = %q, want %q when user \"pg\" exists", got, "pg")
 		}
 		return
 	}
 	if got != "root" {
-		t.Fatalf("defaultServiceUser() = %q, want %q when user \"pg\" does not exist", got, "root")
+		t.Fatalf("DefaultServiceUser() = %q, want %q when user \"pg\" does not exist", got, "root")
 	}
 }
 
