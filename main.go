@@ -1480,7 +1480,7 @@ func main() {
 
 	installCmd := flag.NewFlagSet("install-service", flag.ExitOnError)
 	installStoragePath := installCmd.String("storage-path", "", "Custom storage path")
-	installServiceUser := installCmd.String("service-user", defaultServiceUser(), "User to run the service as (Linux system-level only)")
+	installServiceUser := installCmd.String("service-user", "", "User to run the service as (Linux system-level only)")
 	installUserLevel := installCmd.Bool("user", false, "Install as user-level service (no sudo required)")
 
 	uninstallCmd := flag.NewFlagSet("uninstall-service", flag.ExitOnError)
@@ -1552,6 +1552,9 @@ func main() {
 			if err := installCmd.Parse(os.Args[2:]); err != nil {
 				printError(fmt.Sprintf("Failed to parse install-service flags: %v", err))
 				os.Exit(1)
+			}
+			if *installServiceUser == "" {
+				*installServiceUser = defaultServiceUser()
 			}
 
 			// Setup storage first to ensure paths match defaults if not provided
