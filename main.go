@@ -1481,6 +1481,7 @@ func main() {
 	installCmd := flag.NewFlagSet("install-service", flag.ExitOnError)
 	installStoragePath := installCmd.String("storage-path", "", "Custom storage path")
 	installServiceUser := installCmd.String("service-user", "", "User to run the service as (Linux system-level only)")
+	installServiceGroup := installCmd.String("service-group", "", "Group to run the service as (Linux system-level only, default: primary group of service user)")
 	installUserLevel := installCmd.Bool("user", false, "Install as user-level service (no sudo required)")
 
 	uninstallCmd := flag.NewFlagSet("uninstall-service", flag.ExitOnError)
@@ -1503,6 +1504,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "          --user           Install as user-level service (no sudo required)")
 		fmt.Fprintln(os.Stderr, "          --storage-path   Custom storage path")
 		fmt.Fprintln(os.Stderr, "          --service-user   User to run service as (Linux system-level only, default: pg if exists, else root)")
+		fmt.Fprintln(os.Stderr, "          --service-group  Group to run service as (Linux system-level only, default: primary group of service user)")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  uninstall-service")
 		fmt.Fprintln(os.Stderr, "        Uninstall the service (systemd/Launchd)")
@@ -1567,7 +1569,7 @@ func main() {
 
 			}
 
-			if err := installService(StoragePath, *installServiceUser, *installUserLevel); err != nil {
+			if err := installService(StoragePath, *installServiceUser, *installServiceGroup, *installUserLevel); err != nil {
 
 				printError(fmt.Sprintf("Service installation failed: %v", err))
 
@@ -1616,7 +1618,7 @@ func main() {
 	runTokenMonitoring()
 }
 
-func installService(storagePath, serviceUser string, userLevel bool) error {
+func installService(storagePath, serviceUser, serviceGroup string, userLevel bool) error {
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
@@ -1657,9 +1659,12 @@ WantedBy=default.target
 				return fmt.Errorf("service user %q does not exist: %w (create it with: useradd --system --no-create-home %s)", serviceUser, err, serviceUser)
 			}
 
-			serviceGroup := account.Gid
+			resolvedServiceGroup := account.Gid
 			if group, err := user.LookupGroupId(account.Gid); err == nil {
-				serviceGroup = group.Name
+				resolvedServiceGroup = group.Name
+			}
+			if serviceGroup != "" {
+				resolvedServiceGroup = serviceGroup
 			}
 
 			serviceContent = fmt.Sprintf(`[Unit]
@@ -1675,7 +1680,7 @@ Group=%s
 
 [Install]
 WantedBy=multi-user.target
-`, exePath, storagePath, serviceUser, serviceGroup)
+`, exePath, storagePath, serviceUser, resolvedServiceGroup)
 
 			servicePath = "/etc/systemd/system/legion-auth.service"
 			systemctlArgs = []string{}
