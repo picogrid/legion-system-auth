@@ -435,6 +435,13 @@ func setOwnership(path string) {
 	logger.Printf("Set ownership of %s and parent to pg user", path)
 }
 
+func defaultServiceUser() string {
+	if _, err := user.Lookup("pg"); err == nil {
+		return "pg"
+	}
+	return "root"
+}
+
 func ensureRedirectUriAvailable(redirectURI string) string {
 	parsed, err := url.Parse(redirectURI)
 	if err != nil {
@@ -1473,7 +1480,7 @@ func main() {
 
 	installCmd := flag.NewFlagSet("install-service", flag.ExitOnError)
 	installStoragePath := installCmd.String("storage-path", "", "Custom storage path")
-	installServiceUser := installCmd.String("service-user", "root", "User to run the service as (Linux system-level only)")
+	installServiceUser := installCmd.String("service-user", defaultServiceUser(), "User to run the service as (Linux system-level only)")
 	installUserLevel := installCmd.Bool("user", false, "Install as user-level service (no sudo required)")
 
 	uninstallCmd := flag.NewFlagSet("uninstall-service", flag.ExitOnError)
