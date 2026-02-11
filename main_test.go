@@ -15,6 +15,33 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// chdirTemp changes to a temp directory and returns a cleanup function
+// that restores the original working directory.
+func chdirTemp(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWd); err != nil {
+			t.Logf("warning: failed to restore working directory: %v", err)
+		}
+	})
+}
+
+// writeFile is a test helper that fatals on error.
+func writeFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("writeFile(%s): %v", path, err)
+	}
+}
+
 // ============================================================================
 // findOrgByID
 // ============================================================================
@@ -109,13 +136,7 @@ func TestGetPermissionsForRelation_AllResourceTypes(t *testing.T) {
 // ============================================================================
 
 func TestCreateManifest_AllFlagsSet(t *testing.T) {
-	// Ensure no manifest.json interferes from CWD
-	dir := t.TempDir()
-	oldWd, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWd)
+	chdirTemp(t)
 
 	opts := loginOpts{
 		Name:        "MY-DEVICE",
@@ -155,12 +176,7 @@ func TestCreateManifest_AllFlagsSet(t *testing.T) {
 }
 
 func TestCreateManifest_YesUsesDefaults(t *testing.T) {
-	dir := t.TempDir()
-	oldWd, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWd)
+	chdirTemp(t)
 
 	opts := loginOpts{Yes: true}
 	m := createManifestInteractively(opts)
@@ -191,12 +207,7 @@ func TestCreateManifest_YesUsesDefaults(t *testing.T) {
 }
 
 func TestCreateManifest_YesUsesExistingManifestJSON(t *testing.T) {
-	dir := t.TempDir()
-	oldWd, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWd)
+	chdirTemp(t)
 
 	existing := Manifest{
 		Name:        "FROM-FILE",
@@ -210,7 +221,7 @@ func TestCreateManifest_YesUsesExistingManifestJSON(t *testing.T) {
 		},
 	}
 	data, _ := json.MarshalIndent(existing, "", "  ")
-	os.WriteFile("manifest.json", data, 0644)
+	writeFile(t, "manifest.json", data)
 
 	opts := loginOpts{Yes: true}
 	m := createManifestInteractively(opts)
@@ -224,14 +235,9 @@ func TestCreateManifest_YesUsesExistingManifestJSON(t *testing.T) {
 }
 
 func TestCreateManifest_YesIgnoresMalformedManifestJSON(t *testing.T) {
-	dir := t.TempDir()
-	oldWd, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWd)
+	chdirTemp(t)
 
-	os.WriteFile("manifest.json", []byte("{invalid json"), 0644)
+	writeFile(t, "manifest.json", []byte("{invalid json"))
 
 	opts := loginOpts{Yes: true}
 	m := createManifestInteractively(opts)
@@ -243,12 +249,7 @@ func TestCreateManifest_YesIgnoresMalformedManifestJSON(t *testing.T) {
 }
 
 func TestCreateManifest_AccessLevelViewer(t *testing.T) {
-	dir := t.TempDir()
-	oldWd, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWd)
+	chdirTemp(t)
 
 	opts := loginOpts{Yes: true, AccessLevel: "viewer"}
 	m := createManifestInteractively(opts)
@@ -261,12 +262,7 @@ func TestCreateManifest_AccessLevelViewer(t *testing.T) {
 }
 
 func TestCreateManifest_AccessLevelOperator(t *testing.T) {
-	dir := t.TempDir()
-	oldWd, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWd)
+	chdirTemp(t)
 
 	opts := loginOpts{Yes: true, AccessLevel: "operator"}
 	m := createManifestInteractively(opts)
@@ -279,12 +275,7 @@ func TestCreateManifest_AccessLevelOperator(t *testing.T) {
 }
 
 func TestCreateManifest_AccessLevelInvalid(t *testing.T) {
-	dir := t.TempDir()
-	oldWd, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWd)
+	chdirTemp(t)
 
 	opts := loginOpts{Yes: true, AccessLevel: "superuser"}
 	m := createManifestInteractively(opts)
@@ -298,12 +289,7 @@ func TestCreateManifest_AccessLevelInvalid(t *testing.T) {
 }
 
 func TestCreateManifest_FlagOverridesDefaultsWithoutYes(t *testing.T) {
-	dir := t.TempDir()
-	oldWd, _ := os.Getwd()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(oldWd)
+	chdirTemp(t)
 
 	// Even without --yes, explicit flags should be used
 	opts := loginOpts{
@@ -500,7 +486,7 @@ func TestHasAuthFiles_Empty(t *testing.T) {
 
 func TestHasAuthFiles_WithConfig(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "oauth_config.json"), []byte("{}"), 0644)
+	writeFile(t, filepath.Join(dir, "oauth_config.json"), []byte("{}"))
 	if !hasAuthFiles(dir) {
 		t.Error("expected auth files when oauth_config.json exists")
 	}
@@ -508,7 +494,7 @@ func TestHasAuthFiles_WithConfig(t *testing.T) {
 
 func TestHasAuthFiles_WithAccessToken(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "access_token.json"), []byte("{}"), 0644)
+	writeFile(t, filepath.Join(dir, "access_token.json"), []byte("{}"))
 	if !hasAuthFiles(dir) {
 		t.Error("expected auth files when access_token.json exists")
 	}
@@ -516,7 +502,7 @@ func TestHasAuthFiles_WithAccessToken(t *testing.T) {
 
 func TestHasAuthFiles_WithTerminalEntity(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "terminal_entity.json"), []byte("{}"), 0644)
+	writeFile(t, filepath.Join(dir, "terminal_entity.json"), []byte("{}"))
 	if !hasAuthFiles(dir) {
 		t.Error("expected auth files when terminal_entity.json exists")
 	}
@@ -525,7 +511,7 @@ func TestHasAuthFiles_WithTerminalEntity(t *testing.T) {
 func TestRemoveAuthFiles_CleansAllFiles(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"oauth_config.json", "access_token.json", "refresh_token.json", "extra.txt"} {
-		os.WriteFile(filepath.Join(dir, name), []byte("data"), 0644)
+		writeFile(t, filepath.Join(dir, name), []byte("data"))
 	}
 
 	if err := removeAuthFiles(dir); err != nil {
@@ -540,8 +526,10 @@ func TestRemoveAuthFiles_CleansAllFiles(t *testing.T) {
 
 func TestRemoveAuthFiles_SkipsDirectories(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, "subdir"), 0755)
-	os.WriteFile(filepath.Join(dir, "file.json"), []byte("data"), 0644)
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "file.json"), []byte("data"))
 
 	if err := removeAuthFiles(dir); err != nil {
 		t.Fatalf("removeAuthFiles failed: %v", err)
@@ -572,8 +560,8 @@ func TestEntityTypeMapping(t *testing.T) {
 		{"lander", "lander"},
 		{"helios", "helios"},
 		{"portal", "portal"},
-		{"unknown", "portal"},   // falls back to portal
-		{"INVALID", "portal"},   // falls back to portal
+		{"unknown", "portal"},
+		{"INVALID", "portal"},
 	}
 
 	for _, tt := range tests {
@@ -605,9 +593,11 @@ func TestHTTPError_ErrorFormat(t *testing.T) {
 }
 
 func TestHTTPError_SatisfiesErrorInterface(t *testing.T) {
-	var err error = &HTTPError{StatusCode: 500, Body: "internal"}
-	if err == nil {
-		t.Error("expected non-nil error")
+	httpErr := &HTTPError{StatusCode: 500, Body: "internal"}
+	// Verify it satisfies error interface via assignment.
+	var err error = httpErr
+	if err.Error() == "" {
+		t.Error("expected non-empty error string")
 	}
 }
 
@@ -819,10 +809,14 @@ func TestManifest_JSONOmitsEmptyScopes(t *testing.T) {
 	}
 
 	var raw map[string]json.RawMessage
-	json.Unmarshal(data, &raw)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw failed: %v", err)
+	}
 
 	var oauthRaw map[string]json.RawMessage
-	json.Unmarshal(raw["oauth_config"], &oauthRaw)
+	if err := json.Unmarshal(raw["oauth_config"], &oauthRaw); err != nil {
+		t.Fatalf("unmarshal oauth_config failed: %v", err)
+	}
 
 	if _, ok := oauthRaw["scopes"]; ok {
 		t.Error("expected scopes to be omitted when nil")
