@@ -113,12 +113,18 @@ This will:
 - Start the service immediately
 
 **Custom options:**
+- `--service-user` User to run service as (Linux system-level only, default: "pg" if exists, otherwise "root")
+- `--service-group` Group to run service as (Linux system-level only, default: primary group of service user)
+
 ```bash
 # Custom storage path
 legion-auth install-service --user --storage-path ~/.config/legion-auth
 
 # System-level with specific user (Linux only)
 sudo legion-auth install-service --service-user myuser
+
+# System-level with specific user and group (Linux only)
+sudo legion-auth install-service --service-user myuser --service-group mygroup
 ```
 
 ### 3. Uninstall Service
