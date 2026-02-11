@@ -113,7 +113,7 @@ This will:
 - Start the service immediately
 
 **Custom options:**
-- `--service-user` User to run service as (Linux system-level only)
+- `--service-user` User to run service as (Linux system-level only, default: "pg" if exists, otherwise "root")
 - `--service-group` Group to run service as (Linux system-level only, default: primary group of service user)
 
 ```bash
