@@ -1664,6 +1664,9 @@ WantedBy=default.target
 				resolvedServiceGroup = group.Name
 			}
 			if serviceGroup != "" {
+				if _, err := user.LookupGroup(serviceGroup); err != nil {
+					return fmt.Errorf("service group %q does not exist: %w", serviceGroup, err)
+				}
 				resolvedServiceGroup = serviceGroup
 			}
 
