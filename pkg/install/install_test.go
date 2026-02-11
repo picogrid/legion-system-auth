@@ -43,12 +43,9 @@ func TestInstallServiceUserValidationPattern(t *testing.T) {
 		t.Fatalf("user.Lookup(%q) unexpectedly succeeded", nonexistentUser)
 	}
 
-	root, err := user.Lookup("root")
+	_, err := user.Lookup("root")
 	if runtime.GOOS == "linux" && err != nil {
 		t.Fatalf("user.Lookup(%q) failed on Linux: %v", "root", err)
-	}
-	if err == nil && root == nil {
-		t.Fatalf("user.Lookup(%q) returned nil user without error", "root")
 	}
 }
 
@@ -58,25 +55,18 @@ func TestInstallServiceGroupValidationPattern(t *testing.T) {
 		t.Fatalf("user.LookupGroup(%q) unexpectedly succeeded", nonexistentGroup)
 	}
 
-	group, err := user.LookupGroup("root")
+	_, err := user.LookupGroup("root")
 	if runtime.GOOS == "linux" && err != nil {
 		t.Fatalf("user.LookupGroup(%q) failed on Linux: %v", "root", err)
 	}
-	if err == nil && group == nil {
-		t.Fatalf("user.LookupGroup(%q) returned nil group without error", "root")
-	}
-
 	current, err := user.Current()
 	if err != nil {
 		t.Fatalf("user.Current() failed: %v", err)
 	}
 
-	g, err := user.LookupGroupId(current.Gid)
+	_, err = user.LookupGroupId(current.Gid)
 	if err != nil {
 		t.Fatalf("user.LookupGroupId(%q) failed: %v", current.Gid, err)
-	}
-	if g == nil {
-		t.Fatalf("user.LookupGroupId(%q) returned nil group without error", current.Gid)
 	}
 }
 
@@ -92,9 +82,6 @@ func TestInstallGroupResolutionFromUserAccount(t *testing.T) {
 	group, err := user.LookupGroupId(root.Gid)
 	if err != nil {
 		t.Fatalf("user.LookupGroupId(%q) failed: %v", root.Gid, err)
-	}
-	if group == nil {
-		t.Fatalf("user.LookupGroupId(%q) returned nil group without error", root.Gid)
 	}
 	if group.Name == "" {
 		t.Fatalf("resolved group for gid %q has empty name", root.Gid)
