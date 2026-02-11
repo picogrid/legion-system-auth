@@ -9,6 +9,57 @@ import (
 	"time"
 )
 
+func TestPicogridConstants(t *testing.T) {
+	if PicogridGroupName != "picogrid" {
+		t.Fatalf("PicogridGroupName = %q, want %q", PicogridGroupName, "picogrid")
+	}
+	if PicogridGroupPreferredGID != 65532 {
+		t.Fatalf("PicogridGroupPreferredGID = %d, want %d", PicogridGroupPreferredGID, 65532)
+	}
+}
+
+func TestLookupPicogridGID(t *testing.T) {
+	gid := LookupPicogridGID()
+	// On most CI/dev machines the group won't exist.
+	if _, err := user.LookupGroup(PicogridGroupName); err != nil {
+		if gid != -1 {
+			t.Fatalf("LookupPicogridGID() = %d, want -1 when group absent", gid)
+		}
+	} else {
+		if gid < 0 {
+			t.Fatalf("LookupPicogridGID() = %d, want >= 0 when group exists", gid)
+		}
+	}
+}
+
+func TestEnsurePicogridGroupNotRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("test requires non-root")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("linux only")
+	}
+
+	gid, err := EnsurePicogridGroup()
+	if err != nil {
+		t.Fatalf("EnsurePicogridGroup() returned error for non-root: %v", err)
+	}
+	if gid != -1 {
+		t.Fatalf("EnsurePicogridGroup() = %d, want -1 for non-root", gid)
+	}
+}
+
+func TestEnsureUserInGroupBadUser(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux only")
+	}
+	badUser := nonexistentName("no_such_user")
+	err := EnsureUserInGroup(badUser)
+	if err == nil {
+		t.Fatalf("EnsureUserInGroup(%q) succeeded, want error", badUser)
+	}
+}
+
 func nonexistentName(prefix string) string {
 	return fmt.Sprintf("%s_%d_%d", prefix, os.Getpid(), time.Now().UnixNano())
 }
