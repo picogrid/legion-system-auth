@@ -171,14 +171,15 @@ type ManifestOAuthConfig struct {
 }
 
 type AppConfig struct {
-	IntegrationID  string   `json:"integrationId"`
-	ClientID       string   `json:"clientId"`
-	ClientSecret   string   `json:"clientSecret,omitempty"`
-	RedirectURL    string   `json:"redirectUrl"`
-	OrganizationID string   `json:"organizationId"`
-	LegionBaseURL  string   `json:"legionBaseUrl"`
-	Manifest       Manifest `json:"manifest"`
-	AccessToken    string   `json:"accessToken,omitempty"`
+	IntegrationID    string   `json:"integrationId"`
+	ClientID         string   `json:"clientId"`
+	ClientSecret     string   `json:"clientSecret,omitempty"`
+	RedirectURL      string   `json:"redirectUrl"`
+	OrganizationID   string   `json:"organizationId"`
+	OrganizationName string   `json:"organizationName"`
+	LegionBaseURL    string   `json:"legionBaseUrl"`
+	Manifest         Manifest `json:"manifest"`
+	AccessToken      string   `json:"accessToken,omitempty"`
 }
 
 type PagedIntegrations struct {
@@ -1345,13 +1346,14 @@ func interactiveSetup(createEntity bool) {
 	}
 
 	config := AppConfig{
-		IntegrationID:  integ.ID,
-		ClientID:       clientID,
-		ClientSecret:   clientSecret,
-		RedirectURL:    redirectURL,
-		OrganizationID: org.OrganizationID,
-		LegionBaseURL:  apiURL,
-		Manifest:       manifest,
+		IntegrationID:    integ.ID,
+		ClientID:         clientID,
+		ClientSecret:     clientSecret,
+		RedirectURL:      redirectURL,
+		OrganizationID:   org.OrganizationID,
+		OrganizationName: org.OrganizationName,
+		LegionBaseURL:    apiURL,
+		Manifest:         manifest,
 	}
 
 	if err := saveJSON(ConfigFile, config); err != nil {
@@ -1651,12 +1653,20 @@ func main() {
 		close(shutdownChan)
 
 		// Flush all telemetry before exit
-		if shutdownErr := otelProviders.Shutdown(context.Background()); shutdownErr != nil {
-			logger.Error("OTel shutdown error", slog.String("error", shutdownErr.Error()))
-		}
+		done := make(chan error, 1)
+		go func() {
+			done <- otelProviders.Shutdown(context.Background())
+		}()
 
-		// Force exit after timeout if the main thread is blocked
-		<-time.After(2 * time.Second)
+		// Force exit after timeout if shutdown is not complete
+		select {
+		case shutdownErr := <-done:
+			if shutdownErr != nil {
+				logger.Error("OTel shutdown error", slog.String("error", shutdownErr.Error()))
+			}
+		case <-time.After(2 * time.Second):
+			logger.Warn("OTel shutdown timeout, forcing exit")
+		}
 		os.Exit(0)
 	}()
 
@@ -1687,7 +1697,7 @@ After=network.target
 ExecStart=%s --storage-path %s
 Restart=always
 RestartSec=10
-Environment=PG_OTEL_ENABLED=true
+Environment=PG_OTEL_ENABLED=false
 Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 
 [Install]
@@ -1711,7 +1721,7 @@ Restart=always
 RestartSec=10
 User=%s
 Group=%s
-Environment=PG_OTEL_ENABLED=true
+Environment=PG_OTEL_ENABLED=false
 Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 
 [Install]
@@ -1799,7 +1809,7 @@ WantedBy=multi-user.target
     <key>EnvironmentVariables</key>
     <dict>
         <key>PG_OTEL_ENABLED</key>
-        <string>true</string>
+        <string>false</string>
         <key>OTEL_EXPORTER_OTLP_ENDPOINT</key>
         <string>http://localhost:4318</string>
     </dict>
@@ -1973,10 +1983,11 @@ func loadConfigMetrics() {
 		return
 	}
 	if config.LegionBaseURL != "" || config.OrganizationID != "" {
-		legionMetrics.SetConfig(config.LegionBaseURL, config.OrganizationID)
+		legionMetrics.SetConfig(config.LegionBaseURL, config.OrganizationID, config.OrganizationName)
 		logger.Info("legion config loaded for metrics",
 			slog.String("base_url", config.LegionBaseURL),
 			slog.String("organization_id", config.OrganizationID),
+			slog.String("organization_name", config.OrganizationName),
 		)
 	}
 }

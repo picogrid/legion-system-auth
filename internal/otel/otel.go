@@ -60,6 +60,8 @@ type Providers struct {
 	meterProvider  *sdkmetric.MeterProvider
 }
 
+var noopMeterProvider = sdkmetric.NewMeterProvider()
+
 // Shutdown flushes and shuts down all providers.
 func (p *Providers) Shutdown(ctx context.Context) error {
 	if p == nil {
@@ -87,19 +89,37 @@ func (p *Providers) Meter() *sdkmetric.MeterProvider {
 	if p != nil && p.meterProvider != nil {
 		return p.meterProvider
 	}
-	return sdkmetric.NewMeterProvider() // no-op (no readers)
+	return noopMeterProvider
 }
 
 // parseEndpoint extracts host:port from an endpoint that may include a scheme.
-func parseEndpoint(raw string) string {
+func parseEndpoint(raw string) (host string, urlPath string) {
+	original := raw
 	if !strings.Contains(raw, "://") {
-		return raw
+		raw = "http://" + raw
 	}
 	u, err := url.Parse(raw)
-	if err != nil {
-		return raw
+	if err != nil || u.Host == "" {
+		return original, ""
 	}
-	return u.Host
+	return u.Host, u.Path
+}
+
+func otlpSignalPath(basePath, signalSuffix string) string {
+	basePath = strings.TrimSpace(basePath)
+	if basePath == "" || basePath == "/" {
+		return signalSuffix
+	}
+	basePath = strings.TrimSuffix(basePath, "/")
+	basePath = strings.TrimSuffix(basePath, "/v1/traces")
+	basePath = strings.TrimSuffix(basePath, "/v1/metrics")
+	if basePath == "" {
+		return signalSuffix
+	}
+	if !strings.HasPrefix(basePath, "/") {
+		basePath = "/" + basePath
+	}
+	return basePath + signalSuffix
 }
 
 // isInsecure returns true if the endpoint uses http (not https).
@@ -129,11 +149,14 @@ func Init(ctx context.Context, cfg Config) (*Providers, error) {
 		return nil, fmt.Errorf("creating resource: %w", err)
 	}
 
-	endpoint := parseEndpoint(cfg.Endpoint)
+	endpoint, urlPath := parseEndpoint(cfg.Endpoint)
 	insecure := isInsecure(cfg.Endpoint)
 
 	// Tracer provider
 	traceOpts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
+	if urlPath != "" && urlPath != "/" {
+		traceOpts = append(traceOpts, otlptracehttp.WithURLPath(otlpSignalPath(urlPath, "/v1/traces")))
+	}
 	if insecure {
 		traceOpts = append(traceOpts, otlptracehttp.WithInsecure())
 	}
@@ -153,6 +176,9 @@ func Init(ctx context.Context, cfg Config) (*Providers, error) {
 
 	// Meter provider
 	metricOpts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpoint(endpoint)}
+	if urlPath != "" && urlPath != "/" {
+		metricOpts = append(metricOpts, otlpmetrichttp.WithURLPath(otlpSignalPath(urlPath, "/v1/metrics")))
+	}
 	if insecure {
 		metricOpts = append(metricOpts, otlpmetrichttp.WithInsecure())
 	}

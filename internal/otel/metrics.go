@@ -14,17 +14,18 @@ import (
 // State is updated by the main application; gauges are read by the OTel SDK
 // at each export interval (15s) via callbacks.
 type LegionMetrics struct {
-	mu             sync.RWMutex
-	tokenExpiry    float64 // unix timestamp
-	baseURL        string
-	organizationID string
-	entityID       string
-	serialNumber   string
-	terminalType   string
-	configLoaded   bool
-	terminalLoaded bool
+	mu               sync.RWMutex
+	tokenExpiry      float64 // unix timestamp
+	baseURL          string
+	organizationID   string
+	organizationName string
+	entityID         string
+	serialNumber     string
+	terminalType     string
+	configLoaded     bool
+	terminalLoaded   bool
 
-	refreshes    atomic.Int64
+	refreshes     atomic.Int64
 	refreshErrors atomic.Int64
 }
 
@@ -98,6 +99,7 @@ func NewLegionMetrics(mp metric.MeterProvider) (*LegionMetrics, error) {
 					metric.WithAttributes(
 						attribute.String("base_url", m.baseURL),
 						attribute.String("organization_id", m.organizationID),
+						attribute.String("organization_name", m.organizationName),
 					),
 				)
 			}
@@ -154,22 +156,32 @@ func NewLegionMetrics(mp metric.MeterProvider) (*LegionMetrics, error) {
 
 // SetTokenExpiry updates the cached token expiry unix timestamp.
 func (m *LegionMetrics) SetTokenExpiry(expiry float64) {
+	if m == nil {
+		return
+	}
 	m.mu.Lock()
 	m.tokenExpiry = expiry
 	m.mu.Unlock()
 }
 
 // SetConfig updates the cached Legion platform config labels.
-func (m *LegionMetrics) SetConfig(baseURL, organizationID string) {
+func (m *LegionMetrics) SetConfig(baseURL, organizationID, organizationName string) {
+	if m == nil {
+		return
+	}
 	m.mu.Lock()
 	m.baseURL = baseURL
 	m.organizationID = organizationID
+	m.organizationName = organizationName
 	m.configLoaded = true
 	m.mu.Unlock()
 }
 
 // SetTerminal updates the cached terminal entity labels.
 func (m *LegionMetrics) SetTerminal(entityID, serialNumber, terminalType string) {
+	if m == nil {
+		return
+	}
 	m.mu.Lock()
 	m.entityID = entityID
 	m.serialNumber = serialNumber
@@ -180,10 +192,16 @@ func (m *LegionMetrics) SetTerminal(entityID, serialNumber, terminalType string)
 
 // RecordRefreshSuccess increments the successful refresh counter.
 func (m *LegionMetrics) RecordRefreshSuccess() {
+	if m == nil {
+		return
+	}
 	m.refreshes.Add(1)
 }
 
 // RecordRefreshError increments the failed refresh counter.
 func (m *LegionMetrics) RecordRefreshError() {
+	if m == nil {
+		return
+	}
 	m.refreshErrors.Add(1)
 }
