@@ -429,6 +429,7 @@ func setOwnership(path string) {
 		logger.Warn("insufficient permissions to chown", slog.String("path", path), slog.String("error", err.Error()))
 		return
 	}
+	// #nosec G302 -- directory requires execute bit for traversal by the service user/group.
 	if err := os.Chmod(path, 0755); err != nil {
 		logger.Warn("failed to chmod", slog.String("path", path), slog.String("error", err.Error()))
 	}
@@ -464,6 +465,7 @@ func setOwnership(path string) {
 		if err := os.Chown(parent, uid, gid); err != nil {
 			logger.Warn("failed to chown parent", slog.String("path", parent), slog.String("error", err.Error()))
 		}
+		// #nosec G302 -- parent directory requires execute bit for traversal.
 		if err := os.Chmod(parent, 0755); err != nil {
 			logger.Warn("failed to chmod parent", slog.String("path", parent), slog.String("error", err.Error()))
 		}
@@ -1757,16 +1759,19 @@ WantedBy=multi-user.target
 
 		printInfo("Reloading systemd daemon...")
 		daemonReloadCmd := append(systemctlArgs, "daemon-reload")
+		// #nosec G204 -- command and flags are controlled by in-process logic (only optional --user flag).
 		_ = exec.Command("systemctl", daemonReloadCmd...).Run()
 
 		printInfo("Enabling legion-auth service...")
 		enableCmd := append(systemctlArgs, "enable", "legion-auth")
+		// #nosec G204 -- arguments are fixed systemctl subcommands with optional trusted --user prefix.
 		if err := exec.Command("systemctl", enableCmd...).Run(); err != nil {
 			return fmt.Errorf("failed to enable service: %w", err)
 		}
 
 		printInfo("Starting legion-auth service...")
 		restartCmd := append(systemctlArgs, "restart", "legion-auth")
+		// #nosec G204 -- arguments are fixed systemctl subcommands with optional trusted --user prefix.
 		if err := exec.Command("systemctl", restartCmd...).Run(); err != nil {
 			return fmt.Errorf("failed to start service: %w", err)
 		}
@@ -1840,9 +1845,11 @@ WantedBy=multi-user.target
 		}
 
 		// Unload if exists, then load
+		// #nosec G204 -- launchctl binary/subcommand are fixed; plistPath is internally constructed.
 		_ = exec.Command("launchctl", "unload", plistPath).Run()
 
 		printInfo("Loading service with launchctl...")
+		// #nosec G204 -- launchctl binary/subcommand are fixed; plistPath is internally constructed.
 		if err := exec.Command("launchctl", "load", plistPath).Run(); err != nil {
 			return fmt.Errorf("failed to load service: %w", err)
 		}
@@ -1882,11 +1889,13 @@ func uninstallService(userLevel bool) error {
 		// Stop service
 		printInfo("Stopping legion-auth service...")
 		stopCmd := append(systemctlArgs, "stop", "legion-auth")
+		// #nosec G204 -- arguments are fixed systemctl subcommands with optional trusted --user prefix.
 		_ = exec.Command("systemctl", stopCmd...).Run()
 
 		// Disable service
 		printInfo("Disabling legion-auth service...")
 		disableCmd := append(systemctlArgs, "disable", "legion-auth")
+		// #nosec G204 -- arguments are fixed systemctl subcommands with optional trusted --user prefix.
 		_ = exec.Command("systemctl", disableCmd...).Run()
 
 		// Remove service file
@@ -1900,6 +1909,7 @@ func uninstallService(userLevel bool) error {
 		// Reload daemon
 		printInfo("Reloading systemd daemon...")
 		daemonReloadCmd := append(systemctlArgs, "daemon-reload")
+		// #nosec G204 -- arguments are fixed systemctl subcommands with optional trusted --user prefix.
 		_ = exec.Command("systemctl", daemonReloadCmd...).Run()
 
 		printSuccess("Service uninstalled successfully from Linux (Systemd)!")
@@ -1919,6 +1929,7 @@ func uninstallService(userLevel bool) error {
 
 		// Unload service
 		printInfo("Unloading service with launchctl...")
+		// #nosec G204 -- launchctl binary/subcommand are fixed; plistPath is internally constructed.
 		_ = exec.Command("launchctl", "unload", plistPath).Run()
 
 		// Remove plist file
@@ -1983,6 +1994,7 @@ func loadConfigMetrics() {
 	if legionMetrics == nil {
 		return
 	}
+	// #nosec G304 -- ConfigFile is initialized from controlled storage path during setupStorage.
 	content, err := os.ReadFile(ConfigFile)
 	if err != nil {
 		return
@@ -2006,6 +2018,7 @@ func loadTerminalMetrics() {
 	if legionMetrics == nil {
 		return
 	}
+	// #nosec G304 -- TerminalEntityFile is initialized from controlled storage path during setupStorage.
 	content, err := os.ReadFile(TerminalEntityFile)
 	if err != nil {
 		return
@@ -2045,6 +2058,7 @@ func updateTokenMetrics() {
 	if legionMetrics == nil {
 		return
 	}
+	// #nosec G304 -- AccessTokenFile is initialized from controlled storage path during setupStorage.
 	content, err := os.ReadFile(AccessTokenFile)
 	if err != nil {
 		return
