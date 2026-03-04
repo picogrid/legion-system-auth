@@ -439,11 +439,20 @@ func setOwnership(path string) {
 	if err == nil {
 		for _, e := range entries {
 			fp := filepath.Join(path, e.Name())
+			fi, stErr := os.Lstat(fp)
+			if stErr != nil {
+				logger.Warn("failed to lstat file", slog.String("path", fp), slog.String("error", stErr.Error()))
+				continue
+			}
+			if fi.Mode()&os.ModeSymlink != 0 {
+				logger.Warn("skipping symlink in storage dir", slog.String("path", fp))
+				continue
+			}
 			if chErr := os.Chown(fp, uid, gid); chErr != nil {
 				logger.Warn("failed to chown file", slog.String("path", fp), slog.String("error", chErr.Error()))
 			}
-			if !e.IsDir() {
-				if chErr := os.Chmod(fp, 0644); chErr != nil {
+			if !fi.IsDir() {
+				if chErr := os.Chmod(fp, 0600); chErr != nil {
 					logger.Warn("failed to chmod file", slog.String("path", fp), slog.String("error", chErr.Error()))
 				}
 			}

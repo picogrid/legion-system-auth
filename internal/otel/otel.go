@@ -22,7 +22,7 @@ import (
 // Config holds OTel configuration, typically populated from environment variables.
 type Config struct {
 	Enabled     bool
-	Endpoint    string // host:port (no scheme)
+	Endpoint    string // OTLP endpoint: host:port or full URL (scheme/path supported)
 	ServiceName string
 	Version     string
 	Environment string
