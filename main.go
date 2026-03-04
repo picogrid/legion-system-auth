@@ -160,14 +160,15 @@ type ManifestOAuthConfig struct {
 }
 
 type AppConfig struct {
-	IntegrationID  string   `json:"integrationId"`
-	ClientID       string   `json:"clientId"`
-	ClientSecret   string   `json:"clientSecret,omitempty"`
-	RedirectURL    string   `json:"redirectUrl"`
-	OrganizationID string   `json:"organizationId"`
-	LegionBaseURL  string   `json:"legionBaseUrl"`
-	Manifest       Manifest `json:"manifest"`
-	AccessToken    string   `json:"accessToken,omitempty"`
+	IntegrationID    string   `json:"integrationId"`
+	ClientID         string   `json:"clientId"`
+	ClientSecret     string   `json:"clientSecret,omitempty"`
+	RedirectURL      string   `json:"redirectUrl"`
+	OrganizationID   string   `json:"organizationId"`
+	OrganizationName string   `json:"organizationName"`
+	LegionBaseURL    string   `json:"legionBaseUrl"`
+	Manifest         Manifest `json:"manifest"`
+	AccessToken      string   `json:"accessToken,omitempty"`
 }
 
 type PagedIntegrations struct {
@@ -1320,13 +1321,14 @@ func interactiveSetup(createEntity bool) {
 	}
 
 	config := AppConfig{
-		IntegrationID:  integ.ID,
-		ClientID:       clientID,
-		ClientSecret:   clientSecret,
-		RedirectURL:    redirectURL,
-		OrganizationID: org.OrganizationID,
-		LegionBaseURL:  apiURL,
-		Manifest:       manifest,
+		IntegrationID:    integ.ID,
+		ClientID:         clientID,
+		ClientSecret:     clientSecret,
+		RedirectURL:      redirectURL,
+		OrganizationID:   org.OrganizationID,
+		OrganizationName: org.OrganizationName,
+		LegionBaseURL:    apiURL,
+		Manifest:         manifest,
 	}
 
 	if err := saveJSON(ConfigFile, config); err != nil {
