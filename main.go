@@ -191,7 +191,7 @@ type PagedIntegrations struct {
 
 type EntitySearchResult struct {
 	Results    []map[string]interface{} `json:"results"`
-	TotalCount interface{}              `json:"total_count"`
+	TotalCount int                      `json:"total_count"`
 }
 
 // HTTPError represents an HTTP error response with status code
@@ -1409,26 +1409,46 @@ func interactiveSetup(createEntity bool) {
 
 var errEntityNotFound = fmt.Errorf("entity not found")
 
-func fetchEntityByName(apiURL, orgID, token, name string) (map[string]interface{}, error) {
+func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[string]interface{}, error) {
 	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
+	target := strings.ToLower(serialNumber)
+	const pageSize = 50
 
-	// Search for entity by name using POST /v3/entities/search
-	searchPayload := map[string]interface{}{
-		"filters": map[string]string{
-			"name": name,
-		},
+	for offset := 0; ; offset += pageSize {
+		searchPayload := map[string]interface{}{
+			"filters": map[string]string{
+				"category": "DEVICE",
+				"type":     "Terminal",
+			},
+			"offset": offset,
+			"limit":  pageSize,
+		}
+
+		var result EntitySearchResult
+		if err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities/search", apiURL), searchPayload, headers, &result); err != nil {
+			return nil, fmt.Errorf("failed to search entities: %w", err)
+		}
+
+		for _, entity := range result.Results {
+			metadata, ok := entity["metadata"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			sn, ok := metadata["serial_number"].(string)
+			if !ok {
+				continue
+			}
+			if strings.ToLower(sn) == target {
+				return entity, nil
+			}
+		}
+
+		if offset+pageSize >= result.TotalCount {
+			break
+		}
 	}
 
-	var result EntitySearchResult
-	if err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities/search", apiURL), searchPayload, headers, &result); err != nil {
-		return nil, fmt.Errorf("failed to search entities: %w", err)
-	}
-
-	if len(result.Results) == 0 {
-		return nil, errEntityNotFound
-	}
-
-	return result.Results[0], nil
+	return nil, errEntityNotFound
 }
 
 func createTerminalEntity(apiURL, orgID, integID, token string) {
@@ -1472,8 +1492,7 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 		var httpErr *HTTPError
 		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
 			printWarning("Entity already exists. Fetching existing entity...")
-			entityName := strings.ToUpper(sn)
-			fetchedEntity, fetchErr := fetchEntityByName(apiURL, orgID, token, entityName)
+			fetchedEntity, fetchErr := fetchEntityBySerialNumber(apiURL, orgID, token, sn)
 			if fetchErr != nil {
 				printError(fmt.Sprintf("Failed to fetch existing entity: %v", fetchErr))
 				printError("Terminal entity setup failed. The entity exists but could not be retrieved.")
