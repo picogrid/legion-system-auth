@@ -450,11 +450,15 @@ func setOwnership(path string) {
 				logger.Warn("skipping symlink in storage dir", slog.String("path", fp))
 				continue
 			}
-			if chErr := os.Chown(fp, uid, gid); chErr != nil {
+			fileGroupID := gid
+			if fileGID >= 0 {
+				fileGroupID = fileGID
+			}
+			if chErr := os.Chown(fp, uid, fileGroupID); chErr != nil {
 				logger.Warn("failed to chown file", slog.String("path", fp), slog.String("error", chErr.Error()))
 			}
 			if !fi.IsDir() {
-				if chErr := os.Chmod(fp, 0600); chErr != nil {
+				if chErr := os.Chmod(fp, filePermissions); chErr != nil {
 					logger.Warn("failed to chmod file", slog.String("path", fp), slog.String("error", chErr.Error()))
 				}
 			}
