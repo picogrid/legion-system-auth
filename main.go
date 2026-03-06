@@ -1461,80 +1461,28 @@ func entitySerialNumberFromMap(entity map[string]interface{}) string {
 	return sn
 }
 
-func parseEntityTime(value interface{}) (time.Time, bool) {
-	switch v := value.(type) {
-	case string:
-		trimmed := strings.TrimSpace(v)
+func entityRecencyTime(entity map[string]interface{}) (time.Time, bool) {
+	parse := func(key string) (time.Time, bool) {
+		raw, ok := entity[key].(string)
+		if !ok {
+			return time.Time{}, false
+		}
+		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" {
 			return time.Time{}, false
 		}
-		if parsed, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
-			return parsed.UTC(), true
+		parsed, err := time.Parse(time.RFC3339Nano, trimmed)
+		if err != nil {
+			return time.Time{}, false
 		}
-		if parsed, err := time.Parse(time.RFC3339, trimmed); err == nil {
-			return parsed.UTC(), true
-		}
-		if epoch, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
-			return epochToTime(epoch), true
-		}
-		if epochFloat, err := strconv.ParseFloat(trimmed, 64); err == nil {
-			return epochFloatToTime(epochFloat), true
-		}
-		return time.Time{}, false
-	case float64:
-		return epochFloatToTime(v), true
-	case int64:
-		return epochToTime(v), true
-	case int:
-		return epochToTime(int64(v)), true
-	case int32:
-		return epochToTime(int64(v)), true
-	case int16:
-		return epochToTime(int64(v)), true
-	case int8:
-		return epochToTime(int64(v)), true
-	default:
-		return time.Time{}, false
+		return parsed.UTC(), true
 	}
-}
 
-func epochFloatToTime(value float64) time.Time {
-	abs := value
-	if abs < 0 {
-		abs = -abs
+	if parsed, ok := parse("updated_at"); ok {
+		return parsed, true
 	}
-	if abs < 1_000_000_000_000 {
-		seconds := int64(value)
-		nanos := int64((value - float64(seconds)) * float64(time.Second))
-		return time.Unix(seconds, nanos).UTC()
-	}
-	return epochToTime(int64(value))
-}
-
-func epochToTime(value int64) time.Time {
-	abs := value
-	if abs < 0 {
-		abs = -abs
-	}
-	switch {
-	case abs >= 1_000_000_000_000_000_000:
-		return time.Unix(0, value).UTC()
-	case abs >= 1_000_000_000_000_000:
-		return time.Unix(0, value*int64(time.Microsecond)).UTC()
-	case abs >= 1_000_000_000_000:
-		return time.Unix(0, value*int64(time.Millisecond)).UTC()
-	default:
-		return time.Unix(value, 0).UTC()
-	}
-}
-
-func entityRecencyTime(entity map[string]interface{}) (time.Time, bool) {
-	for _, key := range []string{"updated_at", "created_at", "updatedAt", "createdAt", "timestamp"} {
-		if raw, ok := entity[key]; ok {
-			if parsed, ok := parseEntityTime(raw); ok {
-				return parsed, true
-			}
-		}
+	if parsed, ok := parse("created_at"); ok {
+		return parsed, true
 	}
 	return time.Time{}, false
 }
