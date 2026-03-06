@@ -1640,7 +1640,7 @@ func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[s
 	return nil, errEntityNotFound
 }
 
-func fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, serialNumber string, attempts int, initialDelay time.Duration) (map[string]interface{}, error) {
+func fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, serialNumber string, attempts int, initialDelay time.Duration, retryOnNotFound bool) (map[string]interface{}, error) {
 	if attempts < 1 {
 		attempts = 1
 	}
@@ -1656,7 +1656,7 @@ func fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, serialNumber strin
 			return entity, nil
 		}
 		lastErr = err
-		if !isRetryableEntityLookupError(err) {
+		if !isRetryableEntityLookupError(err, retryOnNotFound) {
 			return nil, err
 		}
 		if attempt < attempts {
@@ -1670,8 +1670,8 @@ func fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, serialNumber strin
 	return nil, lastErr
 }
 
-func isRetryableEntityLookupError(err error) bool {
-	if errors.Is(err, errEntityNotFound) {
+func isRetryableEntityLookupError(err error, retryOnNotFound bool) bool {
+	if retryOnNotFound && errors.Is(err, errEntityNotFound) {
 		return true
 	}
 	var httpErr *HTTPError
@@ -1708,7 +1708,7 @@ func resolveEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map
 		printWarning(fmt.Sprintf("Cached terminal entity is unreadable: %v. Falling back to server lookup.", cacheErr))
 	}
 
-	entity, err := fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, target, 5, 200*time.Millisecond)
+	entity, err := fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, target, 5, 200*time.Millisecond, false)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1772,7 +1772,7 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 		var httpErr *HTTPError
 		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
 			printWarning("Entity create returned 409 conflict. Resolving existing entity by serial number...")
-			fetchedEntity, fetchErr := fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, sn, 5, 200*time.Millisecond)
+			fetchedEntity, fetchErr := fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, sn, 5, 200*time.Millisecond, true)
 			if fetchErr != nil {
 				if errors.Is(fetchErr, errEntityNotFound) {
 					printError("Create conflicted on entity name, but no terminal entity was found with this serial_number.")
