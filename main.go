@@ -1576,16 +1576,14 @@ func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[s
 
 	for offset := 0; ; offset += pageSize {
 		searchPayload := map[string]interface{}{
-			"filters": map[string]string{
-				"category": "DEVICE",
-				"type":     "Terminal",
+			"filters": map[string]interface{}{
+				"category": []string{"DEVICE"},
+				"types":    []string{"Terminal"},
 			},
-			"offset": offset,
-			"limit":  pageSize,
 		}
 
 		var result EntitySearchResult
-		if err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities/search", apiURL), searchPayload, headers, &result); err != nil {
+		if err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities/search?limit=%d&offset=%d", apiURL, pageSize, offset), searchPayload, headers, &result); err != nil {
 			return nil, fmt.Errorf("failed to search entities: %w", err)
 		}
 
