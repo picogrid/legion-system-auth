@@ -248,6 +248,12 @@ func printWarning(text string) {
 	printColored(fmt.Sprintf("⚠ %s", text), ColorYellow, false)
 }
 
+func confirmRecreateEntity(reason string) bool {
+	printWarning(reason)
+	choice := strings.ToLower(strings.TrimSpace(inputPrompt("Recreate terminal entity now? (y/N): ")))
+	return choice == "y" || choice == "yes"
+}
+
 func inputPrompt(prompt string) string {
 	fmt.Print(prompt)
 	reader := bufio.NewReader(os.Stdin)
@@ -1682,33 +1688,7 @@ func isRetryableEntityLookupError(err error, retryOnNotFound bool) bool {
 }
 
 func resolveEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[string]interface{}, string, error) {
-	target := strings.ToLower(serialNumber)
-
-	cachedEntity, cacheErr := loadCachedTerminalEntity()
-	if cacheErr == nil {
-		if strings.ToLower(entitySerialNumberFromMap(cachedEntity)) == target {
-			cachedID := entityIDFromMap(cachedEntity)
-			if cachedID != "" {
-				resolved, fetchErr := fetchEntityByID(apiURL, orgID, token, cachedID)
-				if fetchErr == nil {
-					if strings.ToLower(entitySerialNumberFromMap(resolved)) == target {
-						return resolved, "cache (validated)", nil
-					}
-					printWarning(fmt.Sprintf("Cached entity id %s no longer matches serial %s. Falling back to server lookup.", cachedID, target))
-				} else {
-					if errors.Is(fetchErr, errEntityNotFound) {
-						printWarning("Cached terminal entity no longer exists on server. Falling back to serial search.")
-					} else {
-						printWarning(fmt.Sprintf("Failed to validate cached terminal entity id %s: %v. Falling back to serial search.", cachedID, fetchErr))
-					}
-				}
-			}
-		}
-	} else if !errors.Is(cacheErr, errEntityNotFound) {
-		printWarning(fmt.Sprintf("Cached terminal entity is unreadable: %v. Falling back to server lookup.", cacheErr))
-	}
-
-	entity, err := fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, target, 5, 200*time.Millisecond, false)
+	entity, err := fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, strings.ToLower(serialNumber), 5, 200*time.Millisecond, false)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1717,6 +1697,47 @@ func resolveEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map
 
 func createTerminalEntity(apiURL, orgID, integID, token string) {
 	printColored("\n→ Creating terminal entity...", ColorCyan, true)
+
+	cachedEntity, cacheErr := loadCachedTerminalEntity()
+	if cacheErr == nil {
+		cachedID := entityIDFromMap(cachedEntity)
+		if cachedID == "" {
+			if !confirmRecreateEntity("Cached terminal entity is missing an id.") {
+				printInfo("Keeping cached terminal entity. Setup cancelled.")
+				return
+			}
+			printInfo("Proceeding with terminal entity recreation.")
+		} else {
+			resolved, fetchErr := fetchEntityByID(apiURL, orgID, token, cachedID)
+			if fetchErr != nil {
+				if errors.Is(fetchErr, errEntityNotFound) {
+					if !confirmRecreateEntity("Cached terminal entity no longer exists on server.") {
+						printInfo("Keeping cached terminal entity. Setup cancelled.")
+						return
+					}
+					printInfo("Proceeding with terminal entity recreation.")
+				} else {
+					printError(fmt.Sprintf("Failed to validate cached terminal entity id %s: %v", cachedID, fetchErr))
+					return
+				}
+			} else {
+				if saveErr := saveJSON(TerminalEntityFile, resolved); saveErr != nil {
+					printError(fmt.Sprintf("Failed to save terminal entity: %v", saveErr))
+					return
+				}
+
+				printSuccess("Using cached terminal entity. Remove terminal_entity.json to provision a different entity.")
+				return
+			}
+		}
+	}
+	if !errors.Is(cacheErr, errEntityNotFound) {
+		if !confirmRecreateEntity(fmt.Sprintf("Cached terminal entity is unreadable: %v", cacheErr)) {
+			printInfo("Keeping cached terminal entity. Setup cancelled.")
+			return
+		}
+		printInfo("Proceeding with terminal entity recreation.")
+	}
 
 	sn := inputPrompt("Terminal Serial Number: ")
 	if sn == "" {
