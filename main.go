@@ -1418,8 +1418,6 @@ func interactiveSetup(createEntity bool) {
 
 var errEntityNotFound = errors.New("entity not found")
 
-var errEntityAmbiguous = errors.New("multiple entities found for serial number")
-
 func entityIDFromMap(entity map[string]interface{}) string {
 	if id, ok := entity["id"]; ok {
 		if normalized := normalizeEntityID(id); normalized != "" {
@@ -1455,6 +1453,84 @@ func entitySerialNumberFromMap(entity map[string]interface{}) string {
 		return ""
 	}
 	return sn
+}
+
+func parseEntityTime(value interface{}) (time.Time, bool) {
+	switch v := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return time.Time{}, false
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
+			return parsed.UTC(), true
+		}
+		if parsed, err := time.Parse(time.RFC3339, trimmed); err == nil {
+			return parsed.UTC(), true
+		}
+		if epoch, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
+			return epochToTime(epoch), true
+		}
+		if epochFloat, err := strconv.ParseFloat(trimmed, 64); err == nil {
+			return epochFloatToTime(epochFloat), true
+		}
+		return time.Time{}, false
+	case float64:
+		return epochFloatToTime(v), true
+	case int64:
+		return epochToTime(v), true
+	case int:
+		return epochToTime(int64(v)), true
+	case int32:
+		return epochToTime(int64(v)), true
+	case int16:
+		return epochToTime(int64(v)), true
+	case int8:
+		return epochToTime(int64(v)), true
+	default:
+		return time.Time{}, false
+	}
+}
+
+func epochFloatToTime(value float64) time.Time {
+	abs := value
+	if abs < 0 {
+		abs = -abs
+	}
+	if abs < 1_000_000_000_000 {
+		seconds := int64(value)
+		nanos := int64((value - float64(seconds)) * float64(time.Second))
+		return time.Unix(seconds, nanos).UTC()
+	}
+	return epochToTime(int64(value))
+}
+
+func epochToTime(value int64) time.Time {
+	abs := value
+	if abs < 0 {
+		abs = -abs
+	}
+	switch {
+	case abs >= 1_000_000_000_000_000_000:
+		return time.Unix(0, value).UTC()
+	case abs >= 1_000_000_000_000_000:
+		return time.Unix(0, value*int64(time.Microsecond)).UTC()
+	case abs >= 1_000_000_000_000:
+		return time.Unix(0, value*int64(time.Millisecond)).UTC()
+	default:
+		return time.Unix(value, 0).UTC()
+	}
+}
+
+func entityRecencyTime(entity map[string]interface{}) (time.Time, bool) {
+	for _, key := range []string{"updated_at", "created_at", "updatedAt", "createdAt", "timestamp"} {
+		if raw, ok := entity[key]; ok {
+			if parsed, ok := parseEntityTime(raw); ok {
+				return parsed, true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 func loadCachedTerminalEntity() (map[string]interface{}, error) {
@@ -1493,7 +1569,9 @@ func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[s
 	target := strings.ToLower(serialNumber)
 	const pageSize = 50
 	var matched map[string]interface{}
-	var matchedIDs []string
+	matchedID := ""
+	var matchedTime time.Time
+	matchedHasTime := false
 	seenIDs := map[string]struct{}{}
 
 	for offset := 0; ; offset += pageSize {
@@ -1521,12 +1599,35 @@ func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[s
 					}
 					seenIDs[id] = struct{}{}
 				}
-				matchedIDs = append(matchedIDs, id)
+
+				candidateTime, candidateHasTime := entityRecencyTime(entity)
 				if matched == nil {
 					matched = entity
+					matchedID = id
+					matchedTime = candidateTime
+					matchedHasTime = candidateHasTime
 					continue
 				}
-				return nil, fmt.Errorf("%w: serial_number=%s, entity_ids=%v", errEntityAmbiguous, target, matchedIDs)
+
+				shouldReplace := false
+				if candidateHasTime {
+					if !matchedHasTime || candidateTime.After(matchedTime) {
+						shouldReplace = true
+					} else if matchedHasTime && candidateTime.Equal(matchedTime) && id != "" && matchedID != "" && id > matchedID {
+						// Deterministic tie-breaker when timestamps match.
+						shouldReplace = true
+					}
+				}
+				if !candidateHasTime && !matchedHasTime && matchedID == "" && id != "" {
+					shouldReplace = true
+				}
+
+				if shouldReplace {
+					matched = entity
+					matchedID = id
+					matchedTime = candidateTime
+					matchedHasTime = candidateHasTime
+				}
 			}
 		}
 
@@ -1678,10 +1779,6 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 				if errors.Is(fetchErr, errEntityNotFound) {
 					printError("Create conflicted on entity name, but no terminal entity was found with this serial_number.")
 					printError("An existing entity likely has this name with different metadata.serial_number. Rename that entity or use the matching serial number.")
-					return
-				}
-				if errors.Is(fetchErr, errEntityAmbiguous) {
-					printError("Multiple terminal entities share this serial_number. Manual cleanup is required before setup can continue.")
 					return
 				}
 				printError(fmt.Sprintf("Failed to resolve conflicting entity by serial number: %v", fetchErr))
