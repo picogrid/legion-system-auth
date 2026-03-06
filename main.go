@@ -1403,16 +1403,82 @@ func interactiveSetup(createEntity bool) {
 		}
 	}
 	if createEntity {
-		createTerminalEntity(apiURL, config.OrganizationID, config.IntegrationID, config.AccessToken)
+		createEntityToken := config.AccessToken
+		if createEntityToken == "" {
+			createEntityToken = token
+			printWarning("Headless OAuth token unavailable; using initial user token for entity creation.")
+		}
+		if createEntityToken == "" {
+			printError("No access token available for entity creation.")
+			return
+		}
+		createTerminalEntity(apiURL, config.OrganizationID, config.IntegrationID, createEntityToken)
 	}
 }
 
-var errEntityNotFound = fmt.Errorf("entity not found")
+var errEntityNotFound = errors.New("entity not found")
+
+var errEntityAmbiguous = errors.New("multiple entities found for serial number")
+
+func entityIDFromMap(entity map[string]interface{}) string {
+	if id, ok := entity["id"]; ok {
+		return fmt.Sprintf("%v", id)
+	}
+	if id, ok := entity["entity_id"]; ok {
+		return fmt.Sprintf("%v", id)
+	}
+	return ""
+}
+
+func entitySerialNumberFromMap(entity map[string]interface{}) string {
+	meta, ok := entity["metadata"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	sn, ok := meta["serial_number"].(string)
+	if !ok {
+		return ""
+	}
+	return sn
+}
+
+func loadCachedTerminalEntity() (map[string]interface{}, error) {
+	// #nosec G304 -- TerminalEntityFile is initialized from controlled storage path during setupStorage.
+	content, err := os.ReadFile(TerminalEntityFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, errEntityNotFound
+		}
+		return nil, fmt.Errorf("failed to read cached terminal entity: %w", err)
+	}
+
+	var entity map[string]interface{}
+	if err := json.Unmarshal(content, &entity); err != nil {
+		return nil, fmt.Errorf("failed to parse cached terminal entity: %w", err)
+	}
+	return entity, nil
+}
+
+func fetchEntityByID(apiURL, orgID, token, id string) (map[string]interface{}, error) {
+	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
+
+	var entity map[string]interface{}
+	if err := makeRequestJSON("GET", fmt.Sprintf("%s/v3/entities/%s", apiURL, url.PathEscape(id)), nil, headers, &entity); err != nil {
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+			return nil, errEntityNotFound
+		}
+		return nil, fmt.Errorf("failed to fetch entity by id %s: %w", id, err)
+	}
+	return entity, nil
+}
 
 func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[string]interface{}, error) {
 	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
 	target := strings.ToLower(serialNumber)
 	const pageSize = 50
+	var matched map[string]interface{}
+	var matchedIDs []string
 
 	for offset := 0; ; offset += pageSize {
 		searchPayload := map[string]interface{}{
@@ -1430,16 +1496,14 @@ func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[s
 		}
 
 		for _, entity := range result.Results {
-			metadata, ok := entity["metadata"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-			sn, ok := metadata["serial_number"].(string)
-			if !ok {
-				continue
-			}
+			sn := entitySerialNumberFromMap(entity)
 			if strings.ToLower(sn) == target {
-				return entity, nil
+				matchedIDs = append(matchedIDs, entityIDFromMap(entity))
+				if matched == nil {
+					matched = entity
+					continue
+				}
+				return nil, fmt.Errorf("%w: serial_number=%s, entity_ids=%v", errEntityAmbiguous, target, matchedIDs)
 			}
 		}
 
@@ -1448,7 +1512,74 @@ func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[s
 		}
 	}
 
+	if matched != nil {
+		return matched, nil
+	}
 	return nil, errEntityNotFound
+}
+
+func fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, serialNumber string, attempts int, initialDelay time.Duration) (map[string]interface{}, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	if initialDelay <= 0 {
+		initialDelay = 200 * time.Millisecond
+	}
+
+	delay := initialDelay
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		entity, err := fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber)
+		if err == nil {
+			return entity, nil
+		}
+		lastErr = err
+		if !errors.Is(err, errEntityNotFound) {
+			return nil, err
+		}
+		if attempt < attempts {
+			time.Sleep(delay)
+			if delay < 2*time.Second {
+				delay *= 2
+			}
+		}
+	}
+
+	return nil, lastErr
+}
+
+func resolveEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[string]interface{}, string, error) {
+	target := strings.ToLower(serialNumber)
+
+	cachedEntity, cacheErr := loadCachedTerminalEntity()
+	if cacheErr == nil {
+		if strings.ToLower(entitySerialNumberFromMap(cachedEntity)) == target {
+			cachedID := entityIDFromMap(cachedEntity)
+			if cachedID != "" {
+				resolved, fetchErr := fetchEntityByID(apiURL, orgID, token, cachedID)
+				if fetchErr == nil {
+					if strings.ToLower(entitySerialNumberFromMap(resolved)) == target {
+						return resolved, "cache (validated)", nil
+					}
+					printWarning(fmt.Sprintf("Cached entity id %s no longer matches serial %s. Falling back to server lookup.", cachedID, target))
+				} else {
+					if errors.Is(fetchErr, errEntityNotFound) {
+						printWarning("Cached terminal entity no longer exists on server. Falling back to serial search.")
+					} else {
+						printWarning(fmt.Sprintf("Failed to validate cached terminal entity id %s: %v. Falling back to serial search.", cachedID, fetchErr))
+					}
+				}
+			}
+		}
+	} else if !errors.Is(cacheErr, errEntityNotFound) {
+		printWarning(fmt.Sprintf("Cached terminal entity is unreadable: %v. Falling back to server lookup.", cacheErr))
+	}
+
+	entity, err := fetchEntityBySerialNumber(apiURL, orgID, token, target)
+	if err != nil {
+		return nil, "", err
+	}
+	return entity, "search", nil
 }
 
 func createTerminalEntity(apiURL, orgID, integID, token string) {
@@ -1486,16 +1617,41 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 
 	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
 
+	// Resolve by immutable serial number before creation. If lookup fails, fail closed to avoid duplicates.
+	existing, source, resolveErr := resolveEntityBySerialNumber(apiURL, orgID, token, sn)
+	if resolveErr == nil {
+		if saveErr := saveJSON(TerminalEntityFile, existing); saveErr != nil {
+			printError(fmt.Sprintf("Failed to save terminal entity: %v", saveErr))
+			return
+		}
+		printSuccess(fmt.Sprintf("Found existing terminal entity by serial number via %s. Skipping creation.", source))
+		return
+	}
+	if !errors.Is(resolveErr, errEntityNotFound) {
+		printError(fmt.Sprintf("Failed to verify existing terminal entity: %v", resolveErr))
+		printError("Aborting entity creation to avoid duplicate entities.")
+		return
+	}
+
 	var resp map[string]interface{}
 	err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities", apiURL), payload, headers, &resp)
 	if err != nil {
 		var httpErr *HTTPError
 		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
-			printWarning("Entity already exists. Fetching existing entity...")
-			fetchedEntity, fetchErr := fetchEntityBySerialNumber(apiURL, orgID, token, sn)
+			printWarning("Entity create returned 409 conflict. Resolving existing entity by serial number...")
+			fetchedEntity, fetchErr := fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, sn, 5, 200*time.Millisecond)
 			if fetchErr != nil {
-				printError(fmt.Sprintf("Failed to fetch existing entity: %v", fetchErr))
-				printError("Terminal entity setup failed. The entity exists but could not be retrieved.")
+				if errors.Is(fetchErr, errEntityNotFound) {
+					printError("Create conflicted on entity name, but no terminal entity was found with this serial_number.")
+					printError("An existing entity likely has this name with different metadata.serial_number. Rename that entity or use the matching serial number.")
+					return
+				}
+				if errors.Is(fetchErr, errEntityAmbiguous) {
+					printError("Multiple terminal entities share this serial_number. Manual cleanup is required before setup can continue.")
+					return
+				}
+				printError(fmt.Sprintf("Failed to resolve conflicting entity by serial number: %v", fetchErr))
+				printError("Terminal entity setup failed. Creation was rejected and identity could not be resolved.")
 				return
 			}
 			if saveErr := saveJSON(TerminalEntityFile, fetchedEntity); saveErr != nil {
@@ -1503,7 +1659,7 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 				printError("Terminal entity setup failed. The entity was retrieved but could not be saved.")
 				return
 			}
-			printSuccess("Retrieved and saved existing terminal entity!")
+			printSuccess("Resolved conflict and saved existing terminal entity by serial number.")
 			return
 		}
 		printError(fmt.Sprintf("Failed to create terminal entity: %v", err))
@@ -2068,18 +2224,10 @@ func loadTerminalMetrics() {
 	if json.Unmarshal(content, &entity) != nil {
 		return
 	}
-	entityID := ""
-	if id, ok := entity["id"]; ok {
-		entityID = fmt.Sprintf("%v", id)
-	} else if id, ok := entity["entity_id"]; ok {
-		entityID = fmt.Sprintf("%v", id)
-	}
-	serial := ""
+	entityID := entityIDFromMap(entity)
+	serial := entitySerialNumberFromMap(entity)
 	terminalType := ""
 	if meta, ok := entity["metadata"].(map[string]interface{}); ok {
-		if s, ok := meta["serial_number"].(string); ok {
-			serial = s
-		}
 		if t, ok := meta["terminal_type"].(string); ok {
 			terminalType = t
 		}
