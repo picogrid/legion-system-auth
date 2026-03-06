@@ -1494,6 +1494,7 @@ func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[s
 	const pageSize = 50
 	var matched map[string]interface{}
 	var matchedIDs []string
+	seenIDs := map[string]struct{}{}
 
 	for offset := 0; ; offset += pageSize {
 		searchPayload := map[string]interface{}{
@@ -1513,7 +1514,14 @@ func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[s
 		for _, entity := range result.Results {
 			sn := entitySerialNumberFromMap(entity)
 			if strings.ToLower(sn) == target {
-				matchedIDs = append(matchedIDs, entityIDFromMap(entity))
+				id := entityIDFromMap(entity)
+				if id != "" {
+					if _, exists := seenIDs[id]; exists {
+						continue
+					}
+					seenIDs[id] = struct{}{}
+				}
+				matchedIDs = append(matchedIDs, id)
 				if matched == nil {
 					matched = entity
 					continue
@@ -1601,7 +1609,7 @@ func resolveEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map
 		printWarning(fmt.Sprintf("Cached terminal entity is unreadable: %v. Falling back to server lookup.", cacheErr))
 	}
 
-	entity, err := fetchEntityBySerialNumber(apiURL, orgID, token, target)
+	entity, err := fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, target, 5, 200*time.Millisecond)
 	if err != nil {
 		return nil, "", err
 	}
