@@ -1422,12 +1422,27 @@ var errEntityAmbiguous = errors.New("multiple entities found for serial number")
 
 func entityIDFromMap(entity map[string]interface{}) string {
 	if id, ok := entity["id"]; ok {
-		return fmt.Sprintf("%v", id)
+		if normalized := normalizeEntityID(id); normalized != "" {
+			return normalized
+		}
 	}
 	if id, ok := entity["entity_id"]; ok {
-		return fmt.Sprintf("%v", id)
+		if normalized := normalizeEntityID(id); normalized != "" {
+			return normalized
+		}
 	}
 	return ""
+}
+
+func normalizeEntityID(id interface{}) string {
+	if id == nil {
+		return ""
+	}
+	value := strings.TrimSpace(fmt.Sprintf("%v", id))
+	if value == "" || value == "<nil>" {
+		return ""
+	}
+	return value
 }
 
 func entitySerialNumberFromMap(entity map[string]interface{}) string {
@@ -1534,7 +1549,7 @@ func fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, serialNumber strin
 			return entity, nil
 		}
 		lastErr = err
-		if !errors.Is(err, errEntityNotFound) {
+		if !isRetryableEntityLookupError(err) {
 			return nil, err
 		}
 		if attempt < attempts {
@@ -1546,6 +1561,17 @@ func fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, serialNumber strin
 	}
 
 	return nil, lastErr
+}
+
+func isRetryableEntityLookupError(err error) bool {
+	if errors.Is(err, errEntityNotFound) {
+		return true
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == http.StatusTooManyRequests || httpErr.StatusCode >= http.StatusInternalServerError
+	}
+	return false
 }
 
 func resolveEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[string]interface{}, string, error) {
