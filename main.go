@@ -1188,6 +1188,11 @@ func saveJSON(path string, data interface{}) error {
 // ============================================================================
 
 func shouldRefreshToken() bool {
+	// Can only refresh if a refresh token exists
+	if _, err := os.Stat(RefreshTokenFile); os.IsNotExist(err) {
+		return false
+	}
+
 	content, err := os.ReadFile(AccessTokenFile)
 	if err != nil {
 		// File missing or unreadable — need a fresh token
@@ -2258,6 +2263,10 @@ func runTokenMonitoring() {
 	)
 
 	if _, err := os.Stat(ConfigFile); os.IsNotExist(err) {
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			printError("No configuration found. Run 'legion-auth setup' first.")
+			return
+		}
 		printInfo("No configuration found. Running setup...")
 		interactiveSetup(false)
 		// If setup failed or was cancelled, we might exit, but let's check config again
