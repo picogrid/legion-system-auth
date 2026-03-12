@@ -1401,6 +1401,50 @@ func refreshAccessToken() bool {
 	return true
 }
 func interactiveSetup(opts setupOpts) {
+	// Upfront validation for non-interactive mode: fail fast on missing required flags.
+	if opts.NonInteractive {
+		var missing []string
+		if opts.APIURL == "" && os.Getenv("LEGION_API_URL") == "" {
+			missing = append(missing, "--api-url")
+		}
+		if opts.Username == "" {
+			missing = append(missing, "--username")
+		}
+		if opts.Password == "" {
+			missing = append(missing, "--password")
+		}
+		if opts.OrgID == "" {
+			missing = append(missing, "--org-id")
+		}
+		if opts.CreateEntity {
+			if opts.EntityName == "" {
+				missing = append(missing, "--entity-name")
+			}
+			if opts.EntityType == "" {
+				missing = append(missing, "--entity-type")
+			}
+		}
+		if len(missing) > 0 {
+			printError(fmt.Sprintf("--non-interactive requires flags: %s", strings.Join(missing, ", ")))
+			return
+		}
+	}
+
+	// Validate --entity-type value early (applies to both interactive and non-interactive).
+	if opts.EntityType != "" {
+		valid := false
+		for _, t := range validEntityTypes {
+			if t == opts.EntityType {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			printError(fmt.Sprintf("Unknown entity type %q, must be one of: %s", opts.EntityType, strings.Join(validEntityTypes, ", ")))
+			return
+		}
+	}
+
 	apiURL := opts.APIURL
 	if apiURL == "" {
 		apiURL = os.Getenv("LEGION_API_URL")
