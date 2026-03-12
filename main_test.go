@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -139,12 +138,12 @@ func TestCreateManifest_AllFlagsSet(t *testing.T) {
 	chdirTemp(t)
 
 	opts := setupOpts{
-		Name:           "MY-DEVICE",
-		Description:    "Test integration",
-		Version:        "2.5.0",
-		RedirectURL:    "http://127.0.0.1:19876/cb",
-		AccessLevel:    "admin",
-		NonInteractive: true,
+		IntegrationName: "MY-DEVICE",
+		Description:     "Test integration",
+		Version:         "2.5.0",
+		RedirectURL:     "http://127.0.0.1:19876/cb",
+		AccessLevel:     "admin",
+		NonInteractive:  true,
 	}
 
 	m := createManifestInteractively(opts)
@@ -175,7 +174,7 @@ func TestCreateManifest_AllFlagsSet(t *testing.T) {
 	}
 }
 
-func TestCreateManifest_YesUsesDefaults(t *testing.T) {
+func TestCreateManifest_NonInteractiveUsesDefaults(t *testing.T) {
 	chdirTemp(t)
 
 	opts := setupOpts{NonInteractive: true}
@@ -201,7 +200,7 @@ func TestCreateManifest_YesUsesDefaults(t *testing.T) {
 	}
 }
 
-func TestCreateManifest_YesUsesExistingManifestJSON(t *testing.T) {
+func TestCreateManifest_NonInteractiveUsesExistingManifestJSON(t *testing.T) {
 	chdirTemp(t)
 
 	existing := Manifest{
@@ -229,7 +228,7 @@ func TestCreateManifest_YesUsesExistingManifestJSON(t *testing.T) {
 	}
 }
 
-func TestCreateManifest_YesIgnoresMalformedManifestJSON(t *testing.T) {
+func TestCreateManifest_NonInteractiveIgnoresMalformedManifestJSON(t *testing.T) {
 	chdirTemp(t)
 
 	writeFile(t, "manifest.json", []byte("{invalid json"))
@@ -283,16 +282,16 @@ func TestCreateManifest_AccessLevelInvalid(t *testing.T) {
 	}
 }
 
-func TestCreateManifest_FlagOverridesDefaultsWithoutYes(t *testing.T) {
+func TestCreateManifest_FlagOverridesDefaultsWithoutNonInteractive(t *testing.T) {
 	chdirTemp(t)
 
-	// Even without --yes, explicit flags should be used
+	// Even without --non-interactive, explicit flags should be used
 	opts := setupOpts{
-		Name:        "EXPLICIT",
-		Description: "explicit desc",
-		Version:     "3.0.0",
-		RedirectURL: "http://explicit.example.com/cb",
-		AccessLevel: "admin",
+		IntegrationName: "EXPLICIT",
+		Description:     "explicit desc",
+		Version:         "3.0.0",
+		RedirectURL:     "http://explicit.example.com/cb",
+		AccessLevel:     "admin",
 	}
 	m := createManifestInteractively(opts)
 
@@ -317,12 +316,12 @@ func TestSetupFlags_AllFlags(t *testing.T) {
 	username := fs.String("username", "", "")
 	password := fs.String("password", "", "")
 	orgID := fs.String("org-id", "", "")
-	name := fs.String("name", "", "")
+	integrationName := fs.String("integration-name", "", "")
 	description := fs.String("description", "", "")
 	version := fs.String("version", "", "")
 	redirectURL := fs.String("redirect-url", "", "")
 	accessLevel := fs.String("access-level", "", "")
-	serial := fs.String("serial", "", "")
+	entityName := fs.String("entity-name", "", "")
 	entityType := fs.String("entity-type", "", "")
 	createEntity := fs.Bool("create-entity", false, "")
 	nonInteractive := fs.Bool("non-interactive", false, "")
@@ -332,12 +331,12 @@ func TestSetupFlags_AllFlags(t *testing.T) {
 		"--username", "admin",
 		"--password", "s3cret",
 		"--org-id", "org-123",
-		"--name", "MY-BOX",
+		"--integration-name", "MY-BOX",
 		"--description", "My integration",
 		"--version", "2.0.0",
 		"--redirect-url", "http://localhost:9999/cb",
 		"--access-level", "viewer",
-		"--serial", "SN-001",
+		"--entity-name", "SN-001",
 		"--entity-type", "helios",
 		"--create-entity",
 		"--non-interactive",
@@ -348,19 +347,19 @@ func TestSetupFlags_AllFlags(t *testing.T) {
 	}
 
 	opts := setupOpts{
-		APIURL:         *apiURL,
-		Username:       *username,
-		Password:       *password,
-		OrgID:          *orgID,
-		Name:           *name,
-		Description:    *description,
-		Version:        *version,
-		RedirectURL:    *redirectURL,
-		AccessLevel:    *accessLevel,
-		Serial:         *serial,
-		EntityType:     *entityType,
-		CreateEntity:   *createEntity,
-		NonInteractive: *nonInteractive,
+		APIURL:          *apiURL,
+		Username:        *username,
+		Password:        *password,
+		OrgID:           *orgID,
+		IntegrationName: *integrationName,
+		Description:     *description,
+		Version:         *version,
+		RedirectURL:     *redirectURL,
+		AccessLevel:     *accessLevel,
+		EntityName:      *entityName,
+		EntityType:      *entityType,
+		CreateEntity:    *createEntity,
+		NonInteractive:  *nonInteractive,
 	}
 
 	checks := []struct {
@@ -372,12 +371,12 @@ func TestSetupFlags_AllFlags(t *testing.T) {
 		{"Username", opts.Username, "admin"},
 		{"Password", opts.Password, "s3cret"},
 		{"OrgID", opts.OrgID, "org-123"},
-		{"Name", opts.Name, "MY-BOX"},
+		{"IntegrationName", opts.IntegrationName, "MY-BOX"},
 		{"Description", opts.Description, "My integration"},
 		{"Version", opts.Version, "2.0.0"},
 		{"RedirectURL", opts.RedirectURL, "http://localhost:9999/cb"},
 		{"AccessLevel", opts.AccessLevel, "viewer"},
-		{"Serial", opts.Serial, "SN-001"},
+		{"EntityName", opts.EntityName, "SN-001"},
 		{"EntityType", opts.EntityType, "helios"},
 	}
 
@@ -473,31 +472,30 @@ func TestSetupOpts_ZeroValueIsInteractive(t *testing.T) {
 // ============================================================================
 
 func TestEntityTypeMapping(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"lander", "lander"},
-		{"helios", "helios"},
-		{"portal", "portal"},
-		{"unknown", "portal"},
-		{"INVALID", "portal"},
+	isValid := func(s string) bool {
+		for _, t := range validEntityTypes {
+			if t == s {
+				return true
+			}
+		}
+		return false
 	}
 
-	for _, tt := range tests {
-		t.Run(fmt.Sprintf("input_%s", tt.input), func(t *testing.T) {
-			var tType string
-			switch tt.input {
-			case "lander", "helios", "portal":
-				tType = tt.input
-			default:
-				tType = "portal"
+	t.Run("valid types accepted", func(t *testing.T) {
+		for _, name := range []string{"lander", "helios", "portal", "dev-unit"} {
+			if !isValid(name) {
+				t.Errorf("expected %q to be valid", name)
 			}
-			if tType != tt.expected {
-				t.Errorf("entity type for %q = %q, want %q", tt.input, tType, tt.expected)
+		}
+	})
+
+	t.Run("invalid types rejected", func(t *testing.T) {
+		for _, input := range []string{"unknown", "INVALID", "lander2", ""} {
+			if isValid(input) {
+				t.Errorf("expected %q to be invalid", input)
 			}
-		})
-	}
+		}
+	})
 }
 
 // ============================================================================

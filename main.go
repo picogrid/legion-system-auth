@@ -83,6 +83,9 @@ var (
 	// File permissions (env: LEGION_AUTH_FILE_GID)
 	filePermissions os.FileMode = 0640
 	fileGID                     = -1
+
+	// Valid terminal entity types for --entity-type flag and interactive menu.
+	validEntityTypes = []string{"lander", "helios", "portal", "dev-unit"}
 )
 
 func init() {
@@ -196,19 +199,19 @@ type EntitySearchResult struct {
 
 // setupOpts holds CLI flag values for non-interactive setup.
 type setupOpts struct {
-	APIURL         string
-	Username       string
-	Password       string
-	OrgID          string
-	Name           string
-	Description    string
-	Version        string
-	RedirectURL    string
-	AccessLevel    string
-	Serial         string
-	EntityType     string
-	CreateEntity   bool
-	NonInteractive bool
+	APIURL          string
+	Username        string
+	Password        string
+	OrgID           string
+	IntegrationName string
+	Description     string
+	Version         string
+	RedirectURL     string
+	AccessLevel     string
+	EntityName      string
+	EntityType      string
+	CreateEntity    bool
+	NonInteractive  bool
 }
 
 // HTTPError represents an HTTP error response with status code
@@ -700,8 +703,8 @@ func createManifestInteractively(opts setupOpts) Manifest {
 
 	defaultName := "Portal Integration"
 	var name string
-	if opts.Name != "" {
-		name = opts.Name
+	if opts.IntegrationName != "" {
+		name = opts.IntegrationName
 	} else if opts.NonInteractive {
 		name = defaultName
 	} else {
@@ -964,6 +967,33 @@ func createIntegration(apiURL, token, orgID string, manifest Manifest) (*Integra
 		return nil, err
 	}
 	return &integ, nil
+}
+
+func findIntegrationByName(apiURL, token, orgID, name string) *Integration {
+	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
+	pageSize := 50
+	offset := 0
+
+	for {
+		urlStr := fmt.Sprintf("%s/v3/integrations?offset=%d&limit=%d", apiURL, offset, pageSize)
+		var page PagedIntegrations
+		if err := makeRequestJSON("GET", urlStr, nil, headers, &page); err != nil {
+			printError(fmt.Sprintf("Failed to list integrations: %v", err))
+			return nil
+		}
+		for i := range page.Integrations {
+			if page.Integrations[i].Name == name {
+				return &page.Integrations[i]
+			}
+		}
+		offset += len(page.Integrations)
+		if offset >= page.Total || len(page.Integrations) == 0 {
+			break
+		}
+	}
+
+	printError(fmt.Sprintf("Integration %q not found", name))
+	return nil
 }
 
 func selectExistingIntegrationPaginated(apiURL, token, orgID string) *Integration {
@@ -1441,7 +1471,11 @@ func interactiveSetup(opts setupOpts) {
 		var httpErr *HTTPError
 		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
 			printWarning("Integration exists.")
-			integ = selectExistingIntegrationPaginated(apiURL, token, org.OrganizationID)
+			if opts.NonInteractive {
+				integ = findIntegrationByName(apiURL, token, org.OrganizationID, manifest.Name)
+			} else {
+				integ = selectExistingIntegrationPaginated(apiURL, token, org.OrganizationID)
+			}
 		} else {
 			printError(fmt.Sprintf("Failed: %v", err))
 			return
@@ -1816,10 +1850,10 @@ func createTerminalEntity(apiURL, orgID, integID, token string, opts setupOpts) 
 	}
 
 	var sn string
-	if opts.Serial != "" {
-		sn = opts.Serial
+	if opts.EntityName != "" {
+		sn = opts.EntityName
 	} else if opts.NonInteractive {
-		printError("--serial is required when using --create-entity with --non-interactive")
+		printError("--entity-name is required when using --create-entity with --non-interactive")
 		return
 	} else {
 		sn = inputPrompt("Terminal Serial Number: ")
@@ -1830,26 +1864,33 @@ func createTerminalEntity(apiURL, orgID, integID, token string, opts setupOpts) 
 
 	var tType string
 	if opts.EntityType != "" {
-		switch opts.EntityType {
-		case "lander", "helios", "portal":
-			tType = opts.EntityType
-		default:
-			printError(fmt.Sprintf("Unknown entity type %q, must be lander/helios/portal", opts.EntityType))
+		valid := false
+		for _, t := range validEntityTypes {
+			if t == opts.EntityType {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			printError(fmt.Sprintf("Unknown entity type %q, must be one of: %s", opts.EntityType, strings.Join(validEntityTypes, ", ")))
 			return
 		}
+		tType = opts.EntityType
 	} else if opts.NonInteractive {
 		printError("--entity-type is required when using --create-entity with --non-interactive")
 		return
 	} else {
-		fmt.Println("Available types: 1. lander, 2. helios, 3. portal")
-		typeChoice := inputPrompt("Select type (1-3): ")
-		tType = "portal"
-		if typeChoice == "1" {
-			tType = "lander"
+		fmt.Println("Available types:")
+		for i, t := range validEntityTypes {
+			fmt.Printf("  %d. %s\n", i+1, t)
 		}
-		if typeChoice == "2" {
-			tType = "helios"
+		typeChoice := inputPrompt(fmt.Sprintf("Select type (1-%d): ", len(validEntityTypes)))
+		idx, err := strconv.Atoi(typeChoice)
+		if err != nil || idx < 1 || idx > len(validEntityTypes) {
+			printError(fmt.Sprintf("Invalid selection %q", typeChoice))
+			return
 		}
+		tType = validEntityTypes[idx-1]
 	}
 
 	payload := map[string]interface{}{
@@ -1942,12 +1983,12 @@ func main() {
 	setupUsername := setupCmd.String("username", "", "Username for authentication")
 	setupPassword := setupCmd.String("password", "", "Password for authentication")
 	setupOrgID := setupCmd.String("org-id", "", "Organization ID (skips org selector)")
-	setupName := setupCmd.String("name", "", "Integration name")
+	setupIntegrationName := setupCmd.String("integration-name", "", "Integration name")
 	setupDescription := setupCmd.String("description", "", "Integration description")
 	setupVersion := setupCmd.String("version", "", "Integration version")
 	setupRedirectURL := setupCmd.String("redirect-url", "", "OAuth redirect URL")
 	setupAccessLevel := setupCmd.String("access-level", "", "Access level: viewer/operator/admin")
-	setupSerial := setupCmd.String("serial", "", "Terminal serial number")
+	setupEntityName := setupCmd.String("entity-name", "", "Terminal entity name / serial number")
 	setupEntityType := setupCmd.String("entity-type", "", "Terminal type: lander/helios/portal")
 	setupCreateEntity := setupCmd.Bool("create-entity", false, "Create terminal entity during setup")
 	setupNonInteractive := setupCmd.Bool("non-interactive", false, "Run without prompts, use flags and defaults")
@@ -1974,13 +2015,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "          --username       Username for authentication")
 		fmt.Fprintln(os.Stderr, "          --password       Password for authentication")
 		fmt.Fprintln(os.Stderr, "          --org-id         Organization ID (skips org selector)")
-		fmt.Fprintln(os.Stderr, "          --name           Integration name")
+		fmt.Fprintln(os.Stderr, "          --integration-name  Integration name")
 		fmt.Fprintln(os.Stderr, "          --description    Integration description")
 		fmt.Fprintln(os.Stderr, "          --version        Integration version")
 		fmt.Fprintln(os.Stderr, "          --redirect-url   OAuth redirect URL")
 		fmt.Fprintln(os.Stderr, "          --access-level   Access level: viewer/operator/admin")
 		fmt.Fprintln(os.Stderr, "          --create-entity  Create terminal entity during setup")
-		fmt.Fprintln(os.Stderr, "          --serial         Terminal serial number")
+		fmt.Fprintln(os.Stderr, "          --entity-name    Terminal entity name / serial number")
 		fmt.Fprintln(os.Stderr, "          --entity-type    Terminal type: lander/helios/portal")
 		fmt.Fprintln(os.Stderr, "          --non-interactive Run without prompts, use flags and defaults")
 
@@ -2025,19 +2066,19 @@ func main() {
 			}
 
 			opts := setupOpts{
-				APIURL:         *setupAPIURL,
-				Username:       *setupUsername,
-				Password:       *setupPassword,
-				OrgID:          *setupOrgID,
-				Name:           *setupName,
-				Description:    *setupDescription,
-				Version:        *setupVersion,
-				RedirectURL:    *setupRedirectURL,
-				AccessLevel:    *setupAccessLevel,
-				Serial:         *setupSerial,
-				EntityType:     *setupEntityType,
-				CreateEntity:   *setupCreateEntity,
-				NonInteractive: *setupNonInteractive,
+				APIURL:          *setupAPIURL,
+				Username:        *setupUsername,
+				Password:        *setupPassword,
+				OrgID:           *setupOrgID,
+				IntegrationName: *setupIntegrationName,
+				Description:     *setupDescription,
+				Version:         *setupVersion,
+				RedirectURL:     *setupRedirectURL,
+				AccessLevel:     *setupAccessLevel,
+				EntityName:      *setupEntityName,
+				EntityType:      *setupEntityType,
+				CreateEntity:    *setupCreateEntity,
+				NonInteractive:  *setupNonInteractive,
 			}
 
 			if err := setupStorage(*setupStoragePath); err != nil {
