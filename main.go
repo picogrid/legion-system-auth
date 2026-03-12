@@ -214,6 +214,34 @@ type setupOpts struct {
 	NonInteractive  bool
 }
 
+// setupFlagResult holds the parsed setup flags, separating storage-path
+// (which is not part of setupOpts) from the rest.
+type setupFlagResult struct {
+	Opts        setupOpts
+	StoragePath string
+}
+
+// registerSetupFlags registers all setup sub-command flags on fs.
+// Both production code and tests call this to keep flag definitions in sync.
+func registerSetupFlags(fs *flag.FlagSet) *setupFlagResult {
+	r := &setupFlagResult{}
+	fs.StringVar(&r.StoragePath, "storage-path", "", "Custom storage path")
+	fs.StringVar(&r.Opts.APIURL, "api-url", "", "Legion API URL (skips environment selector)")
+	fs.StringVar(&r.Opts.Username, "username", "", "Username for authentication")
+	fs.StringVar(&r.Opts.Password, "password", "", "Password for authentication")
+	fs.StringVar(&r.Opts.OrgID, "org-id", "", "Organization ID (skips org selector)")
+	fs.StringVar(&r.Opts.IntegrationName, "integration-name", "", "Integration name")
+	fs.StringVar(&r.Opts.Description, "description", "", "Integration description")
+	fs.StringVar(&r.Opts.Version, "version", "", "Integration version")
+	fs.StringVar(&r.Opts.RedirectURL, "redirect-url", "", "OAuth redirect URL")
+	fs.StringVar(&r.Opts.AccessLevel, "access-level", "", "Access level: viewer/operator/admin")
+	fs.StringVar(&r.Opts.EntityName, "entity-name", "", "Terminal entity name / serial number")
+	fs.StringVar(&r.Opts.EntityType, "entity-type", "", "Terminal type: lander/helios/portal")
+	fs.BoolVar(&r.Opts.CreateEntity, "create-entity", false, "Create terminal entity during setup")
+	fs.BoolVar(&r.Opts.NonInteractive, "non-interactive", false, "Run without prompts, use flags and defaults")
+	return r
+}
+
 // HTTPError represents an HTTP error response with status code
 type HTTPError struct {
 	StatusCode int
@@ -2022,20 +2050,7 @@ func main() {
 	httpClient = &http.Client{Timeout: 30 * time.Second}
 
 	setupCmd := flag.NewFlagSet("setup", flag.ExitOnError)
-	setupStoragePath := setupCmd.String("storage-path", "", "Custom storage path")
-	setupAPIURL := setupCmd.String("api-url", "", "Legion API URL (skips environment selector)")
-	setupUsername := setupCmd.String("username", "", "Username for authentication")
-	setupPassword := setupCmd.String("password", "", "Password for authentication")
-	setupOrgID := setupCmd.String("org-id", "", "Organization ID (skips org selector)")
-	setupIntegrationName := setupCmd.String("integration-name", "", "Integration name")
-	setupDescription := setupCmd.String("description", "", "Integration description")
-	setupVersion := setupCmd.String("version", "", "Integration version")
-	setupRedirectURL := setupCmd.String("redirect-url", "", "OAuth redirect URL")
-	setupAccessLevel := setupCmd.String("access-level", "", "Access level: viewer/operator/admin")
-	setupEntityName := setupCmd.String("entity-name", "", "Terminal entity name / serial number")
-	setupEntityType := setupCmd.String("entity-type", "", "Terminal type: lander/helios/portal")
-	setupCreateEntity := setupCmd.Bool("create-entity", false, "Create terminal entity during setup")
-	setupNonInteractive := setupCmd.Bool("non-interactive", false, "Run without prompts, use flags and defaults")
+	setupFlags := registerSetupFlags(setupCmd)
 
 	installCmd := flag.NewFlagSet("install-service", flag.ExitOnError)
 	installStoragePath := installCmd.String("storage-path", "", "Custom storage path")
@@ -2109,28 +2124,12 @@ func main() {
 				os.Exit(1)
 			}
 
-			opts := setupOpts{
-				APIURL:          *setupAPIURL,
-				Username:        *setupUsername,
-				Password:        *setupPassword,
-				OrgID:           *setupOrgID,
-				IntegrationName: *setupIntegrationName,
-				Description:     *setupDescription,
-				Version:         *setupVersion,
-				RedirectURL:     *setupRedirectURL,
-				AccessLevel:     *setupAccessLevel,
-				EntityName:      *setupEntityName,
-				EntityType:      *setupEntityType,
-				CreateEntity:    *setupCreateEntity,
-				NonInteractive:  *setupNonInteractive,
-			}
-
-			if err := setupStorage(*setupStoragePath); err != nil {
+			if err := setupStorage(setupFlags.StoragePath); err != nil {
 				printError(fmt.Sprintf("Storage setup failed: %v", err))
 				os.Exit(1)
 			}
 
-			interactiveSetup(opts)
+			interactiveSetup(setupFlags.Opts)
 
 			return
 

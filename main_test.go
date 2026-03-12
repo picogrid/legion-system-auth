@@ -312,21 +312,10 @@ func TestCreateManifest_FlagOverridesDefaultsWithoutNonInteractive(t *testing.T)
 
 func TestSetupFlags_AllFlags(t *testing.T) {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
-	apiURL := fs.String("api-url", "", "")
-	username := fs.String("username", "", "")
-	password := fs.String("password", "", "")
-	orgID := fs.String("org-id", "", "")
-	integrationName := fs.String("integration-name", "", "")
-	description := fs.String("description", "", "")
-	version := fs.String("version", "", "")
-	redirectURL := fs.String("redirect-url", "", "")
-	accessLevel := fs.String("access-level", "", "")
-	entityName := fs.String("entity-name", "", "")
-	entityType := fs.String("entity-type", "", "")
-	createEntity := fs.Bool("create-entity", false, "")
-	nonInteractive := fs.Bool("non-interactive", false, "")
+	result := registerSetupFlags(fs)
 
 	args := []string{
+		"--storage-path", "/tmp/custom",
 		"--api-url", "https://legion.example.com",
 		"--username", "admin",
 		"--password", "s3cret",
@@ -346,27 +335,14 @@ func TestSetupFlags_AllFlags(t *testing.T) {
 		t.Fatalf("failed to parse flags: %v", err)
 	}
 
-	opts := setupOpts{
-		APIURL:          *apiURL,
-		Username:        *username,
-		Password:        *password,
-		OrgID:           *orgID,
-		IntegrationName: *integrationName,
-		Description:     *description,
-		Version:         *version,
-		RedirectURL:     *redirectURL,
-		AccessLevel:     *accessLevel,
-		EntityName:      *entityName,
-		EntityType:      *entityType,
-		CreateEntity:    *createEntity,
-		NonInteractive:  *nonInteractive,
-	}
+	opts := result.Opts
 
 	checks := []struct {
 		name string
 		got  string
 		want string
 	}{
+		{"StoragePath", result.StoragePath, "/tmp/custom"},
 		{"APIURL", opts.APIURL, "https://legion.example.com"},
 		{"Username", opts.Username, "admin"},
 		{"Password", opts.Password, "s3cret"},
@@ -396,36 +372,35 @@ func TestSetupFlags_AllFlags(t *testing.T) {
 
 func TestSetupFlags_Defaults(t *testing.T) {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
-	apiURL := fs.String("api-url", "", "")
-	username := fs.String("username", "", "")
-	nonInteractive := fs.Bool("non-interactive", false, "")
-	noEntity := fs.Bool("no-entity", false, "")
+	result := registerSetupFlags(fs)
 
 	// Parse with no arguments
 	if err := fs.Parse([]string{}); err != nil {
 		t.Fatalf("failed to parse empty flags: %v", err)
 	}
 
-	if *apiURL != "" {
-		t.Errorf("api-url default = %q, want empty", *apiURL)
+	opts := result.Opts
+
+	if result.StoragePath != "" {
+		t.Errorf("StoragePath default = %q, want empty", result.StoragePath)
 	}
-	if *username != "" {
-		t.Errorf("username default = %q, want empty", *username)
+	if opts.APIURL != "" {
+		t.Errorf("APIURL default = %q, want empty", opts.APIURL)
 	}
-	if *nonInteractive {
-		t.Error("non-interactive default should be false")
+	if opts.Username != "" {
+		t.Errorf("Username default = %q, want empty", opts.Username)
 	}
-	if *noEntity {
-		t.Error("no-entity default should be false")
+	if opts.NonInteractive {
+		t.Error("NonInteractive default should be false")
+	}
+	if opts.CreateEntity {
+		t.Error("CreateEntity default should be false")
 	}
 }
 
 func TestSetupFlags_PartialFlags(t *testing.T) {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
-	apiURL := fs.String("api-url", "", "")
-	username := fs.String("username", "", "")
-	password := fs.String("password", "", "")
-	nonInteractive := fs.Bool("non-interactive", false, "")
+	result := registerSetupFlags(fs)
 
 	// Only API URL provided — simulates partial non-interactive
 	args := []string{"--api-url", "https://legion.example.com"}
@@ -433,17 +408,19 @@ func TestSetupFlags_PartialFlags(t *testing.T) {
 		t.Fatalf("failed to parse flags: %v", err)
 	}
 
-	if *apiURL != "https://legion.example.com" {
-		t.Errorf("api-url = %q, want %q", *apiURL, "https://legion.example.com")
+	opts := result.Opts
+
+	if opts.APIURL != "https://legion.example.com" {
+		t.Errorf("APIURL = %q, want %q", opts.APIURL, "https://legion.example.com")
 	}
-	if *username != "" {
-		t.Errorf("username = %q, want empty", *username)
+	if opts.Username != "" {
+		t.Errorf("Username = %q, want empty", opts.Username)
 	}
-	if *password != "" {
-		t.Errorf("password = %q, want empty", *password)
+	if opts.Password != "" {
+		t.Errorf("Password = %q, want empty", opts.Password)
 	}
-	if *nonInteractive {
-		t.Error("non-interactive should be false")
+	if opts.NonInteractive {
+		t.Error("NonInteractive should be false")
 	}
 }
 
