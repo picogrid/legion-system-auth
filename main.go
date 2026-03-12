@@ -194,6 +194,23 @@ type EntitySearchResult struct {
 	TotalCount int                      `json:"total_count"`
 }
 
+// setupOpts holds CLI flag values for non-interactive setup.
+type setupOpts struct {
+	APIURL         string
+	Username       string
+	Password       string
+	OrgID          string
+	Name           string
+	Description    string
+	Version        string
+	RedirectURL    string
+	AccessLevel    string
+	Serial         string
+	EntityType     string
+	NonInteractive bool
+	NoEntity       bool
+}
+
 // HTTPError represents an HTTP error response with status code
 type HTTPError struct {
 	StatusCode int
@@ -248,8 +265,12 @@ func printWarning(text string) {
 	printColored(fmt.Sprintf("⚠ %s", text), ColorYellow, false)
 }
 
-func confirmRecreateEntity(reason string) bool {
+func confirmRecreateEntity(reason string, autoYes bool) bool {
 	printWarning(reason)
+	if autoYes {
+		printInfo("Auto-confirming entity recreation (--non-interactive)")
+		return true
+	}
 	choice := strings.ToLower(strings.TrimSpace(inputPrompt("Recreate terminal entity now? (y/N): ")))
 	return choice == "y" || choice == "yes"
 }
@@ -557,7 +578,7 @@ func selectLegionEnvironment() string {
 	}
 }
 
-func getWellKnownConfig(legionAPIURL string) OAuthConfig {
+func getWellKnownConfig(legionAPIURL string, skipOverride bool) OAuthConfig {
 	wellKnownURL := fmt.Sprintf("%s/v3/.well-known/oauth-authorization-server", legionAPIURL)
 	printInfo(fmt.Sprintf("Fetching OAuth configuration from %s", wellKnownURL))
 
@@ -569,6 +590,10 @@ func getWellKnownConfig(legionAPIURL string) OAuthConfig {
 	}
 
 	printSuccess(fmt.Sprintf("Found Keycloak at: %s", config.Issuer))
+
+	if skipOverride {
+		return config
+	}
 
 	choice := inputPrompt("Do you want to override the Keycloak URL? (y/N): ")
 	if strings.ToLower(choice) == "y" {
@@ -625,6 +650,15 @@ func getOrganizations(legionAPIURL, token string) ([]Organization, error) {
 	return resp.Results, err
 }
 
+func findOrgByID(orgs []Organization, id string) (Organization, bool) {
+	for _, org := range orgs {
+		if org.OrganizationID == id {
+			return org, true
+		}
+	}
+	return Organization{}, false
+}
+
 func selectOrganization(orgs []Organization) Organization {
 	printColored("\nAvailable organizations:", ColorCyan, false)
 	for i, org := range orgs {
@@ -641,72 +675,123 @@ func selectOrganization(orgs []Organization) Organization {
 	}
 }
 
-func createManifestInteractively() Manifest {
+func createManifestInteractively(opts setupOpts) Manifest {
 	printColored("\nIntegration Configuration", ColorCyan, true)
 
 	if _, err := os.Stat("manifest.json"); err == nil {
-		use := inputPrompt("Found manifest.json. Use existing? (Y/n): ")
-		if use == "" || strings.ToLower(use) == "y" {
+		if opts.NonInteractive {
 			content, _ := os.ReadFile("manifest.json")
 			var m Manifest
 			if json.Unmarshal(content, &m) == nil {
+				printSuccess("Using existing manifest.json")
 				return m
+			}
+		} else {
+			use := inputPrompt("Found manifest.json. Use existing? (Y/n): ")
+			if use == "" || strings.ToLower(use) == "y" {
+				content, _ := os.ReadFile("manifest.json")
+				var m Manifest
+				if json.Unmarshal(content, &m) == nil {
+					return m
+				}
 			}
 		}
 	}
 
-	name := inputPrompt("   Name [Portal Integration]: ")
-	if name == "" {
-		name = "Portal Integration"
+	defaultName := "Portal Integration"
+	var name string
+	if opts.Name != "" {
+		name = opts.Name
+	} else if opts.NonInteractive {
+		name = defaultName
+	} else {
+		name = inputPrompt(fmt.Sprintf("   Name [%s]: ", defaultName))
+		if name == "" {
+			name = defaultName
+		}
 	}
 
-	desc := inputPrompt("   Description [OAuth integration...]: ")
-	if desc == "" {
-		desc = "OAuth integration for portal authentication"
+	defaultDesc := "OAuth integration for portal authentication"
+	var desc string
+	if opts.Description != "" {
+		desc = opts.Description
+	} else if opts.NonInteractive {
+		desc = defaultDesc
+	} else {
+		desc = inputPrompt("   Description [OAuth integration...]: ")
+		if desc == "" {
+			desc = defaultDesc
+		}
 	}
 
-	ver := inputPrompt("   Version [1.0.0]: ")
-	if ver == "" {
-		ver = "1.0.0"
+	defaultVer := "1.0.0"
+	var ver string
+	if opts.Version != "" {
+		ver = opts.Version
+	} else if opts.NonInteractive {
+		ver = defaultVer
+	} else {
+		ver = inputPrompt("   Version [1.0.0]: ")
+		if ver == "" {
+			ver = defaultVer
+		}
 	}
 
-	redirect := inputPrompt("   Redirect URL [http://localhost:8000/oauth_callback]: ")
-	if redirect == "" {
-		redirect = "http://localhost:8000/oauth_callback"
+	defaultRedirect := "http://localhost:8000/oauth_callback"
+	var redirect string
+	if opts.RedirectURL != "" {
+		redirect = opts.RedirectURL
+	} else if opts.NonInteractive {
+		redirect = defaultRedirect
+	} else {
+		redirect = inputPrompt("   Redirect URL [http://localhost:8000/oauth_callback]: ")
+		if redirect == "" {
+			redirect = defaultRedirect
+		}
 	}
 
 	redirect = ensureRedirectUriAvailable(redirect)
 
-	// Ask if they want to use permissions or legacy scopes
-	printColored("\nPermission Configuration", ColorCyan, false)
-	printInfo("Choose authorization method:")
-	fmt.Println("  1. Permissions (Recommended - fine-grained access control)")
-	fmt.Println("  2. Legacy Scopes (Deprecated - for backward compatibility)")
-
-	authChoice := inputPrompt("\nSelect (1 or 2) [1]: ")
-	if authChoice == "" {
-		authChoice = "1"
-	}
-
 	var permissions []PermissionRequest
 	var scopes []string
 
-	if authChoice == "1" {
-		// Use permissions
-		printColored("\nSelect permissions to grant:", ColorCyan, false)
-		permissions = selectPermissionsWithPresets()
+	if opts.AccessLevel != "" {
+		switch opts.AccessLevel {
+		case "viewer", "operator", "admin":
+			permissions = getPermissionsForRelation(opts.AccessLevel)
+		default:
+			printWarning(fmt.Sprintf("Unknown access level %q, defaulting to operator", opts.AccessLevel))
+			permissions = getPermissionsForRelation("operator")
+		}
+	} else if opts.NonInteractive {
+		permissions = getPermissionsForRelation("operator")
 	} else {
-		// Use legacy scopes
-		printWarning("Using deprecated scopes. Consider migrating to permissions.")
-		scopes = []string{
-			"offline_access",
-			"entities:read",
-			"entities:write",
-			"feeds:read",
-			"feeds:write",
-			"tasking:read",
-			"tasking:write",
-			"organizations:read",
+		// Ask if they want to use permissions or legacy scopes
+		printColored("\nPermission Configuration", ColorCyan, false)
+		printInfo("Choose authorization method:")
+		fmt.Println("  1. Permissions (Recommended - fine-grained access control)")
+		fmt.Println("  2. Legacy Scopes (Deprecated - for backward compatibility)")
+
+		authChoice := inputPrompt("\nSelect (1 or 2) [1]: ")
+		if authChoice == "" {
+			authChoice = "1"
+		}
+
+		if authChoice == "1" {
+			printColored("\nSelect permissions to grant:", ColorCyan, false)
+			permissions = selectPermissionsWithPresets()
+		} else {
+			printWarning("Using deprecated scopes. Consider migrating to permissions.")
+			scopes = []string{
+				"offline_access",
+				"entities:read",
+				"entities:write",
+				"feeds:read",
+				"feeds:write",
+				"tasking:read",
+				"tasking:write",
+				"organizations:read",
+			}
 		}
 	}
 
@@ -1285,22 +1370,47 @@ func refreshAccessToken() bool {
 	printSuccess(fmt.Sprintf("Token Refreshed! Expires in %v", time.Duration(resp.ExpiresIn)*time.Second))
 	return true
 }
-func interactiveSetup(createEntity bool) {
-	apiURL := os.Getenv("LEGION_API_URL")
+func interactiveSetup(opts setupOpts) {
+	apiURL := opts.APIURL
+	if apiURL == "" {
+		apiURL = os.Getenv("LEGION_API_URL")
+	}
 	if apiURL == "" {
 		apiURL = selectLegionEnvironment()
 	}
 
-	oauthCfg := getWellKnownConfig(apiURL)
+	oauthCfg := getWellKnownConfig(apiURL, opts.NonInteractive)
 
-	printInfo("\nEnter Credentials")
-	username := inputPrompt("Username: ")
-	password := readPasswordSimple("Password: ")
+	var username string
+	if opts.Username != "" {
+		username = opts.Username
+	} else {
+		printInfo("\nEnter Credentials")
+		username = inputPrompt("Username: ")
+	}
 
-	token, err := authenticateUser(oauthCfg.TokenEndpoint, username, password)
-	if err != nil {
-		printError(fmt.Sprintf("Auth failed: %v", err))
-		return
+	var token string
+	if opts.Username != "" && opts.Password != "" {
+		var err error
+		token, err = authenticateUser(oauthCfg.TokenEndpoint, username, opts.Password)
+		if err != nil {
+			printError(fmt.Sprintf("Auth failed: %v", err))
+			return
+		}
+	} else {
+		if opts.Username == "" {
+			printInfo("\nEnter Credentials")
+		}
+		for {
+			password := readPasswordSimple("Password: ")
+			var err error
+			token, err = authenticateUser(oauthCfg.TokenEndpoint, username, password)
+			if err == nil {
+				break
+			}
+			printError(fmt.Sprintf("Auth failed: %v", err))
+			printInfo("Please try again (Ctrl+C to abort)")
+		}
 	}
 	printSuccess("Authenticated!")
 
@@ -1309,9 +1419,21 @@ func interactiveSetup(createEntity bool) {
 		printError("No organizations found.")
 		return
 	}
-	org := selectOrganization(orgs)
 
-	manifest := createManifestInteractively()
+	var org Organization
+	if opts.OrgID != "" {
+		found, ok := findOrgByID(orgs, opts.OrgID)
+		if !ok {
+			printError(fmt.Sprintf("Organization %q not found in available organizations", opts.OrgID))
+			return
+		}
+		org = found
+		printSuccess(fmt.Sprintf("Using organization: %s (%s)", org.OrganizationName, org.OrganizationID))
+	} else {
+		org = selectOrganization(orgs)
+	}
+
+	manifest := createManifestInteractively(opts)
 
 	printInfo("\nCreating integration...")
 	integ, err := createIntegration(apiURL, token, org.OrganizationID, manifest)
@@ -1412,7 +1534,11 @@ func interactiveSetup(createEntity bool) {
 			printError(fmt.Sprintf("Failed to update config with bridge token: %v", err))
 		}
 	}
-	if createEntity {
+
+	// Entity creation
+	if opts.NoEntity {
+		printInfo("Skipping entity creation (--no-entity)")
+	} else if opts.NonInteractive || opts.Serial != "" {
 		createEntityToken := config.AccessToken
 		if createEntityToken == "" {
 			createEntityToken = token
@@ -1422,7 +1548,7 @@ func interactiveSetup(createEntity bool) {
 			printError("No access token available for entity creation.")
 			return
 		}
-		createTerminalEntity(apiURL, config.OrganizationID, config.IntegrationID, createEntityToken)
+		createTerminalEntity(apiURL, config.OrganizationID, config.IntegrationID, createEntityToken, opts)
 	}
 }
 
@@ -1647,14 +1773,14 @@ func resolveEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map
 	return entity, "search", nil
 }
 
-func createTerminalEntity(apiURL, orgID, integID, token string) {
+func createTerminalEntity(apiURL, orgID, integID, token string, opts setupOpts) {
 	printColored("\n→ Creating terminal entity...", ColorCyan, true)
 
 	cachedEntity, cacheErr := loadCachedTerminalEntity()
 	if cacheErr == nil {
 		cachedID := entityIDFromMap(cachedEntity)
 		if cachedID == "" {
-			if !confirmRecreateEntity("Cached terminal entity is missing an id.") {
+			if !confirmRecreateEntity("Cached terminal entity is missing an id.", opts.NonInteractive) {
 				printInfo("Keeping cached terminal entity. Setup cancelled.")
 				return
 			}
@@ -1663,7 +1789,7 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 			resolved, fetchErr := fetchEntityByID(apiURL, orgID, token, cachedID)
 			if fetchErr != nil {
 				if errors.Is(fetchErr, errEntityNotFound) {
-					if !confirmRecreateEntity("Cached terminal entity no longer exists on server.") {
+					if !confirmRecreateEntity("Cached terminal entity no longer exists on server.", opts.NonInteractive) {
 						printInfo("Keeping cached terminal entity. Setup cancelled.")
 						return
 					}
@@ -1684,26 +1810,47 @@ func createTerminalEntity(apiURL, orgID, integID, token string) {
 		}
 	}
 	if !errors.Is(cacheErr, errEntityNotFound) {
-		if !confirmRecreateEntity(fmt.Sprintf("Cached terminal entity is unreadable: %v", cacheErr)) {
+		if !confirmRecreateEntity(fmt.Sprintf("Cached terminal entity is unreadable: %v", cacheErr), opts.NonInteractive) {
 			printInfo("Keeping cached terminal entity. Setup cancelled.")
 			return
 		}
 		printInfo("Proceeding with terminal entity recreation.")
 	}
 
-	sn := inputPrompt("Terminal Serial Number: ")
-	if sn == "" {
+	var sn string
+	if opts.Serial != "" {
+		sn = opts.Serial
+	} else if opts.NonInteractive {
+		printWarning("Skipping entity creation: --serial is required with --non-interactive")
 		return
+	} else {
+		sn = inputPrompt("Terminal Serial Number: ")
+		if sn == "" {
+			return
+		}
 	}
 
-	fmt.Println("Available types: 1. lander, 2. helios, 3. portal")
-	typeChoice := inputPrompt("Select type (1-3): ")
-	tType := "portal"
-	if typeChoice == "1" {
-		tType = "lander"
-	}
-	if typeChoice == "2" {
-		tType = "helios"
+	var tType string
+	if opts.EntityType != "" {
+		switch opts.EntityType {
+		case "lander", "helios", "portal":
+			tType = opts.EntityType
+		default:
+			printWarning(fmt.Sprintf("Unknown entity type %q, defaulting to portal", opts.EntityType))
+			tType = "portal"
+		}
+	} else if opts.NonInteractive {
+		tType = "portal"
+	} else {
+		fmt.Println("Available types: 1. lander, 2. helios, 3. portal")
+		typeChoice := inputPrompt("Select type (1-3): ")
+		tType = "portal"
+		if typeChoice == "1" {
+			tType = "lander"
+		}
+		if typeChoice == "2" {
+			tType = "helios"
+		}
 	}
 
 	payload := map[string]interface{}{
@@ -1791,8 +1938,20 @@ func main() {
 	httpClient = &http.Client{Timeout: 30 * time.Second}
 
 	setupCmd := flag.NewFlagSet("setup", flag.ExitOnError)
-	createEntityFlag := setupCmd.Bool("create-entity", false, "Create terminal entity during setup")
 	setupStoragePath := setupCmd.String("storage-path", "", "Custom storage path")
+	setupAPIURL := setupCmd.String("api-url", "", "Legion API URL (skips environment selector)")
+	setupUsername := setupCmd.String("username", "", "Username for authentication")
+	setupPassword := setupCmd.String("password", "", "Password for authentication")
+	setupOrgID := setupCmd.String("org-id", "", "Organization ID (skips org selector)")
+	setupName := setupCmd.String("name", "", "Integration name")
+	setupDescription := setupCmd.String("description", "", "Integration description")
+	setupVersion := setupCmd.String("version", "", "Integration version")
+	setupRedirectURL := setupCmd.String("redirect-url", "", "OAuth redirect URL")
+	setupAccessLevel := setupCmd.String("access-level", "", "Access level: viewer/operator/admin")
+	setupSerial := setupCmd.String("serial", "", "Terminal serial number (implies --create-entity)")
+	setupEntityType := setupCmd.String("entity-type", "", "Terminal type: lander/helios/portal")
+	setupNonInteractive := setupCmd.Bool("non-interactive", false, "Run without prompts, use flags and defaults")
+	setupNoEntity := setupCmd.Bool("no-entity", false, "Skip entity creation entirely")
 
 	installCmd := flag.NewFlagSet("install-service", flag.ExitOnError)
 	installStoragePath := installCmd.String("storage-path", "", "Custom storage path")
@@ -1809,10 +1968,22 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [command] [options]\n\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "Commands:")
 		fmt.Fprintln(os.Stderr, "  setup")
-		fmt.Fprintln(os.Stderr, "        Run interactive setup configuration")
+		fmt.Fprintln(os.Stderr, "        Run setup (interactive by default, or with --non-interactive)")
 		fmt.Fprintln(os.Stderr, "        Flags:")
-		fmt.Fprintln(os.Stderr, "          --create-entity  Create terminal entity during setup")
 		fmt.Fprintln(os.Stderr, "          --storage-path   Custom storage path")
+		fmt.Fprintln(os.Stderr, "          --api-url        Legion API URL (skips environment selector)")
+		fmt.Fprintln(os.Stderr, "          --username       Username for authentication")
+		fmt.Fprintln(os.Stderr, "          --password       Password for authentication")
+		fmt.Fprintln(os.Stderr, "          --org-id         Organization ID (skips org selector)")
+		fmt.Fprintln(os.Stderr, "          --name           Integration name")
+		fmt.Fprintln(os.Stderr, "          --description    Integration description")
+		fmt.Fprintln(os.Stderr, "          --version        Integration version")
+		fmt.Fprintln(os.Stderr, "          --redirect-url   OAuth redirect URL")
+		fmt.Fprintln(os.Stderr, "          --access-level   Access level: viewer/operator/admin")
+		fmt.Fprintln(os.Stderr, "          --serial         Terminal serial number (triggers entity creation)")
+		fmt.Fprintln(os.Stderr, "          --entity-type    Terminal type: lander/helios/portal")
+		fmt.Fprintln(os.Stderr, "          --non-interactive Run without prompts, use flags and defaults")
+		fmt.Fprintln(os.Stderr, "          --no-entity      Skip entity creation entirely")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  install-service")
 		fmt.Fprintln(os.Stderr, "        Install as a system or user service (systemd/Launchd)")
@@ -1853,15 +2024,28 @@ func main() {
 				os.Exit(1)
 			}
 
-			if err := setupStorage(*setupStoragePath); err != nil {
-
-				printError(fmt.Sprintf("Storage setup failed: %v", err))
-
-				os.Exit(1)
-
+			opts := setupOpts{
+				APIURL:         *setupAPIURL,
+				Username:       *setupUsername,
+				Password:       *setupPassword,
+				OrgID:          *setupOrgID,
+				Name:           *setupName,
+				Description:    *setupDescription,
+				Version:        *setupVersion,
+				RedirectURL:    *setupRedirectURL,
+				AccessLevel:    *setupAccessLevel,
+				Serial:         *setupSerial,
+				EntityType:     *setupEntityType,
+				NonInteractive: *setupNonInteractive,
+				NoEntity:       *setupNoEntity,
 			}
 
-			interactiveSetup(*createEntityFlag)
+			if err := setupStorage(*setupStoragePath); err != nil {
+				printError(fmt.Sprintf("Storage setup failed: %v", err))
+				os.Exit(1)
+			}
+
+			interactiveSetup(opts)
 
 			return
 
@@ -2259,7 +2443,7 @@ func runTokenMonitoring() {
 
 	if _, err := os.Stat(ConfigFile); os.IsNotExist(err) {
 		printInfo("No configuration found. Running setup...")
-		interactiveSetup(false)
+		interactiveSetup(setupOpts{})
 		// If setup failed or was cancelled, we might exit, but let's check config again
 		if _, err := os.Stat(ConfigFile); os.IsNotExist(err) {
 			return
