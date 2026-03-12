@@ -207,8 +207,8 @@ type setupOpts struct {
 	AccessLevel    string
 	Serial         string
 	EntityType     string
+	CreateEntity   bool
 	NonInteractive bool
-	NoEntity       bool
 }
 
 // HTTPError represents an HTTP error response with status code
@@ -1536,9 +1536,7 @@ func interactiveSetup(opts setupOpts) {
 	}
 
 	// Entity creation
-	if opts.NoEntity {
-		printInfo("Skipping entity creation (--no-entity)")
-	} else if opts.NonInteractive || opts.Serial != "" {
+	if opts.CreateEntity {
 		createEntityToken := config.AccessToken
 		if createEntityToken == "" {
 			createEntityToken = token
@@ -1821,7 +1819,7 @@ func createTerminalEntity(apiURL, orgID, integID, token string, opts setupOpts) 
 	if opts.Serial != "" {
 		sn = opts.Serial
 	} else if opts.NonInteractive {
-		printWarning("Skipping entity creation: --serial is required with --non-interactive")
+		printError("--serial is required when using --create-entity with --non-interactive")
 		return
 	} else {
 		sn = inputPrompt("Terminal Serial Number: ")
@@ -1836,11 +1834,12 @@ func createTerminalEntity(apiURL, orgID, integID, token string, opts setupOpts) 
 		case "lander", "helios", "portal":
 			tType = opts.EntityType
 		default:
-			printWarning(fmt.Sprintf("Unknown entity type %q, defaulting to portal", opts.EntityType))
-			tType = "portal"
+			printError(fmt.Sprintf("Unknown entity type %q, must be lander/helios/portal", opts.EntityType))
+			return
 		}
 	} else if opts.NonInteractive {
-		tType = "portal"
+		printError("--entity-type is required when using --create-entity with --non-interactive")
+		return
 	} else {
 		fmt.Println("Available types: 1. lander, 2. helios, 3. portal")
 		typeChoice := inputPrompt("Select type (1-3): ")
@@ -1948,10 +1947,10 @@ func main() {
 	setupVersion := setupCmd.String("version", "", "Integration version")
 	setupRedirectURL := setupCmd.String("redirect-url", "", "OAuth redirect URL")
 	setupAccessLevel := setupCmd.String("access-level", "", "Access level: viewer/operator/admin")
-	setupSerial := setupCmd.String("serial", "", "Terminal serial number (implies --create-entity)")
+	setupSerial := setupCmd.String("serial", "", "Terminal serial number")
 	setupEntityType := setupCmd.String("entity-type", "", "Terminal type: lander/helios/portal")
+	setupCreateEntity := setupCmd.Bool("create-entity", false, "Create terminal entity during setup")
 	setupNonInteractive := setupCmd.Bool("non-interactive", false, "Run without prompts, use flags and defaults")
-	setupNoEntity := setupCmd.Bool("no-entity", false, "Skip entity creation entirely")
 
 	installCmd := flag.NewFlagSet("install-service", flag.ExitOnError)
 	installStoragePath := installCmd.String("storage-path", "", "Custom storage path")
@@ -1980,10 +1979,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "          --version        Integration version")
 		fmt.Fprintln(os.Stderr, "          --redirect-url   OAuth redirect URL")
 		fmt.Fprintln(os.Stderr, "          --access-level   Access level: viewer/operator/admin")
-		fmt.Fprintln(os.Stderr, "          --serial         Terminal serial number (triggers entity creation)")
+		fmt.Fprintln(os.Stderr, "          --create-entity  Create terminal entity during setup")
+		fmt.Fprintln(os.Stderr, "          --serial         Terminal serial number")
 		fmt.Fprintln(os.Stderr, "          --entity-type    Terminal type: lander/helios/portal")
 		fmt.Fprintln(os.Stderr, "          --non-interactive Run without prompts, use flags and defaults")
-		fmt.Fprintln(os.Stderr, "          --no-entity      Skip entity creation entirely")
+
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  install-service")
 		fmt.Fprintln(os.Stderr, "        Install as a system or user service (systemd/Launchd)")
@@ -2036,8 +2036,8 @@ func main() {
 				AccessLevel:    *setupAccessLevel,
 				Serial:         *setupSerial,
 				EntityType:     *setupEntityType,
+				CreateEntity:   *setupCreateEntity,
 				NonInteractive: *setupNonInteractive,
-				NoEntity:       *setupNoEntity,
 			}
 
 			if err := setupStorage(*setupStoragePath); err != nil {

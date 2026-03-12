@@ -324,8 +324,8 @@ func TestSetupFlags_AllFlags(t *testing.T) {
 	accessLevel := fs.String("access-level", "", "")
 	serial := fs.String("serial", "", "")
 	entityType := fs.String("entity-type", "", "")
+	createEntity := fs.Bool("create-entity", false, "")
 	nonInteractive := fs.Bool("non-interactive", false, "")
-	noEntity := fs.Bool("no-entity", false, "")
 
 	args := []string{
 		"--api-url", "https://legion.example.com",
@@ -339,8 +339,8 @@ func TestSetupFlags_AllFlags(t *testing.T) {
 		"--access-level", "viewer",
 		"--serial", "SN-001",
 		"--entity-type", "helios",
+		"--create-entity",
 		"--non-interactive",
-		"--no-entity",
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -359,8 +359,8 @@ func TestSetupFlags_AllFlags(t *testing.T) {
 		AccessLevel:    *accessLevel,
 		Serial:         *serial,
 		EntityType:     *entityType,
+		CreateEntity:   *createEntity,
 		NonInteractive: *nonInteractive,
-		NoEntity:       *noEntity,
 	}
 
 	checks := []struct {
@@ -390,8 +390,8 @@ func TestSetupFlags_AllFlags(t *testing.T) {
 	if !opts.NonInteractive {
 		t.Error("opts.NonInteractive should be true")
 	}
-	if !opts.NoEntity {
-		t.Error("opts.NoEntity should be true")
+	if !opts.CreateEntity {
+		t.Error("opts.CreateEntity should be true")
 	}
 }
 
@@ -463,8 +463,8 @@ func TestSetupOpts_ZeroValueIsInteractive(t *testing.T) {
 	if opts.NonInteractive {
 		t.Error("zero NonInteractive should be false")
 	}
-	if opts.NoEntity {
-		t.Error("zero NoEntity should be false")
+	if opts.CreateEntity {
+		t.Error("zero CreateEntity should be false")
 	}
 }
 

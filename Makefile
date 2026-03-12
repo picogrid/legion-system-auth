@@ -5,7 +5,7 @@ GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE ?= $(shell date -u '+%Y-%m-%d_%H:%M:%S')
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main.BuildDate=$(BUILD_DATE)"
 
-.PHONY: all build clean test fmt vet lint security check install-service install help
+.PHONY: all build clean test fmt vet lint security check install-service install run help
 
 all: build
 
@@ -51,6 +51,10 @@ security:
 ## check: Run all checks (fmt, vet, lint, security, test)
 check: fmt vet lint security test
 	@echo "✓ All checks passed!"
+
+## run: Build and run with optional ARGS (e.g. make run ARGS="setup --non-interactive")
+run: build
+	./$(BINARY_NAME) $(ARGS)
 
 ## install: Build and install the binary
 install: build
