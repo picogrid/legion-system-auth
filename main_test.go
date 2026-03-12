@@ -639,7 +639,28 @@ func TestGenerateState_Uniqueness(t *testing.T) {
 // setupStorage
 // ============================================================================
 
+// saveAndRestoreStorageGlobals captures the package-level storage path
+// variables before a test and restores them via t.Cleanup.
+func saveAndRestoreStorageGlobals(t *testing.T) {
+	t.Helper()
+	origStoragePath := StoragePath
+	origConfigFile := ConfigFile
+	origAccessTokenFile := AccessTokenFile
+	origRefreshTokenFile := RefreshTokenFile
+	origTerminalEntityFile := TerminalEntityFile
+	origLegionOAuthPath := LegionOAuthPath
+	t.Cleanup(func() {
+		StoragePath = origStoragePath
+		ConfigFile = origConfigFile
+		AccessTokenFile = origAccessTokenFile
+		RefreshTokenFile = origRefreshTokenFile
+		TerminalEntityFile = origTerminalEntityFile
+		LegionOAuthPath = origLegionOAuthPath
+	})
+}
+
 func TestSetupStorage_CustomPath(t *testing.T) {
+	saveAndRestoreStorageGlobals(t)
 	dir := t.TempDir()
 	custom := filepath.Join(dir, "custom", "auth")
 
@@ -660,6 +681,7 @@ func TestSetupStorage_CustomPath(t *testing.T) {
 }
 
 func TestSetupStorage_CreatesDirectory(t *testing.T) {
+	saveAndRestoreStorageGlobals(t)
 	dir := t.TempDir()
 	nested := filepath.Join(dir, "a", "b", "c")
 
