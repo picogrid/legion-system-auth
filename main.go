@@ -1473,6 +1473,16 @@ func interactiveSetup(opts setupOpts) {
 		}
 	}
 
+	// Validate --access-level value early (applies to both interactive and non-interactive).
+	if opts.AccessLevel != "" {
+		switch opts.AccessLevel {
+		case "viewer", "operator", "admin":
+		default:
+			printError(fmt.Sprintf("Unknown access level %q, must be one of: viewer, operator, admin", opts.AccessLevel))
+			return
+		}
+	}
+
 	apiURL := opts.APIURL
 	if apiURL == "" {
 		apiURL = os.Getenv("LEGION_API_URL")
