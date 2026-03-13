@@ -5,6 +5,7 @@
 *.so
 *.dylib
 legion-auth
+legion-auth-go
 
 # Test binary, built with `go test -c`
 *.test
