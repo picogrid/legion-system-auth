@@ -2529,8 +2529,11 @@ func runTokenMonitoring() {
 
 	if _, err := os.Stat(ConfigFile); os.IsNotExist(err) {
 		printInfo("No configuration found. Running setup...")
-		interactiveSetup(setupOpts{})
-		// If setup failed or was cancelled, we might exit, but let's check config again
+		if err := interactiveSetup(setupOpts{}); err != nil {
+			printError(err.Error())
+			return
+		}
+		// If setup succeeded but config still missing, bail out
 		if _, err := os.Stat(ConfigFile); os.IsNotExist(err) {
 			return
 		}
