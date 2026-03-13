@@ -1428,7 +1428,7 @@ func refreshAccessToken() bool {
 	printSuccess(fmt.Sprintf("Token Refreshed! Expires in %v", time.Duration(resp.ExpiresIn)*time.Second))
 	return true
 }
-func interactiveSetup(opts setupOpts) {
+func interactiveSetup(opts setupOpts) error {
 	// Upfront validation for non-interactive mode: fail fast on missing required flags.
 	if opts.NonInteractive {
 		var missing []string
@@ -1453,8 +1453,7 @@ func interactiveSetup(opts setupOpts) {
 			}
 		}
 		if len(missing) > 0 {
-			printError(fmt.Sprintf("--non-interactive requires flags: %s", strings.Join(missing, ", ")))
-			return
+			return fmt.Errorf("--non-interactive requires flags: %s", strings.Join(missing, ", "))
 		}
 	}
 
@@ -1468,8 +1467,7 @@ func interactiveSetup(opts setupOpts) {
 			}
 		}
 		if !valid {
-			printError(fmt.Sprintf("Unknown entity type %q, must be one of: %s", opts.EntityType, strings.Join(validEntityTypes, ", ")))
-			return
+			return fmt.Errorf("unknown entity type %q, must be one of: %s", opts.EntityType, strings.Join(validEntityTypes, ", "))
 		}
 	}
 
@@ -1478,8 +1476,7 @@ func interactiveSetup(opts setupOpts) {
 		switch opts.AccessLevel {
 		case "viewer", "operator", "admin":
 		default:
-			printError(fmt.Sprintf("Unknown access level %q, must be one of: viewer, operator, admin", opts.AccessLevel))
-			return
+			return fmt.Errorf("unknown access level %q, must be one of: viewer, operator, admin", opts.AccessLevel)
 		}
 	}
 
@@ -1506,8 +1503,7 @@ func interactiveSetup(opts setupOpts) {
 		var err error
 		token, err = authenticateUser(oauthCfg.TokenEndpoint, username, opts.Password)
 		if err != nil {
-			printError(fmt.Sprintf("Auth failed: %v", err))
-			return
+			return fmt.Errorf("auth failed: %w", err)
 		}
 	} else {
 		if opts.Username == "" {
@@ -1528,16 +1524,14 @@ func interactiveSetup(opts setupOpts) {
 
 	orgs, err := getOrganizations(apiURL, token)
 	if err != nil || len(orgs) == 0 {
-		printError("No organizations found.")
-		return
+		return fmt.Errorf("no organizations found")
 	}
 
 	var org Organization
 	if opts.OrgID != "" {
 		found, ok := findOrgByID(orgs, opts.OrgID)
 		if !ok {
-			printError(fmt.Sprintf("Organization %q not found in available organizations", opts.OrgID))
-			return
+			return fmt.Errorf("organization %q not found in available organizations", opts.OrgID)
 		}
 		org = found
 		printSuccess(fmt.Sprintf("Using organization: %s (%s)", org.OrganizationName, org.OrganizationID))
@@ -1559,13 +1553,12 @@ func interactiveSetup(opts setupOpts) {
 				integ = selectExistingIntegrationPaginated(apiURL, token, org.OrganizationID)
 			}
 		} else {
-			printError(fmt.Sprintf("Failed: %v", err))
-			return
+			return fmt.Errorf("failed to create integration: %w", err)
 		}
 	}
 
 	if integ == nil {
-		return
+		return fmt.Errorf("no integration selected")
 	}
 
 	// Get OAuth Credentials
@@ -1595,8 +1588,7 @@ func interactiveSetup(opts setupOpts) {
 		printWarning("Regenerating client secret...")
 		clientSecret, err = regenerateClientSecret(apiURL, token, org.OrganizationID, integ.ID)
 		if err != nil {
-			printError(fmt.Sprintf("Failed to regenerate client secret: %v", err))
-			return
+			return fmt.Errorf("failed to regenerate client secret: %w", err)
 		}
 	}
 
@@ -1617,8 +1609,7 @@ func interactiveSetup(opts setupOpts) {
 	}
 
 	if err := saveJSON(ConfigFile, config); err != nil {
-		printError(fmt.Sprintf("CRITICAL: Failed to save configuration: %v", err))
-		return
+		return fmt.Errorf("critical: failed to save configuration: %w", err)
 	}
 
 	// Initial User Token Save
@@ -1628,8 +1619,7 @@ func interactiveSetup(opts setupOpts) {
 		ExpiresAt:      time.Now().Add(1 * time.Hour).Format(time.RFC3339),
 		OrganizationID: org.OrganizationID,
 	}); err != nil {
-		printError(fmt.Sprintf("Failed to save access token: %v", err))
-		return
+		return fmt.Errorf("failed to save access token: %w", err)
 	}
 
 	// Perform Headless
@@ -1637,13 +1627,11 @@ func interactiveSetup(opts setupOpts) {
 		// Update config with bridge token
 		content, err := os.ReadFile(AccessTokenFile)
 		if err != nil {
-			printError(fmt.Sprintf("Failed to read access token file: %v", err))
-			return
+			return fmt.Errorf("failed to read access token file: %w", err)
 		}
 		var t StoredToken
 		if err := json.Unmarshal(content, &t); err != nil {
-			printError(fmt.Sprintf("Failed to unmarshal access token from %s: %v", AccessTokenFile, err))
-			return
+			return fmt.Errorf("failed to unmarshal access token from %s: %w", AccessTokenFile, err)
 		}
 		config.AccessToken = t.AccessToken
 		if err := saveJSON(ConfigFile, config); err != nil {
@@ -1659,11 +1647,12 @@ func interactiveSetup(opts setupOpts) {
 			printWarning("Headless OAuth token unavailable; using initial user token for entity creation.")
 		}
 		if createEntityToken == "" {
-			printError("No access token available for entity creation.")
-			return
+			return fmt.Errorf("no access token available for entity creation")
 		}
 		createTerminalEntity(apiURL, config.OrganizationID, config.IntegrationID, createEntityToken, opts)
 	}
+
+	return nil
 }
 
 var errEntityNotFound = errors.New("entity not found")
@@ -2139,7 +2128,10 @@ func main() {
 				os.Exit(1)
 			}
 
-			interactiveSetup(setupFlags.Opts)
+			if err := interactiveSetup(setupFlags.Opts); err != nil {
+				printError(err.Error())
+				os.Exit(1)
+			}
 
 			return
 
