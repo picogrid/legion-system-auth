@@ -236,7 +236,7 @@ func registerSetupFlags(fs *flag.FlagSet) *setupFlagResult {
 	fs.StringVar(&r.Opts.RedirectURL, "redirect-url", "", "OAuth redirect URL")
 	fs.StringVar(&r.Opts.AccessLevel, "access-level", "", "Access level: viewer/operator/admin")
 	fs.StringVar(&r.Opts.EntityName, "entity-name", "", "Terminal entity name / serial number")
-	fs.StringVar(&r.Opts.EntityType, "entity-type", "", "Terminal type: lander/helios/portal")
+	fs.StringVar(&r.Opts.EntityType, "entity-type", "", "Terminal type: lander/helios/portal/dev-unit")
 	fs.BoolVar(&r.Opts.CreateEntity, "create-entity", false, "Create terminal entity during setup")
 	fs.BoolVar(&r.Opts.NonInteractive, "non-interactive", false, "Run without prompts, use flags and defaults")
 	return r
@@ -2081,7 +2081,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "          --access-level   Access level: viewer/operator/admin")
 		fmt.Fprintln(os.Stderr, "          --create-entity  Create terminal entity during setup")
 		fmt.Fprintln(os.Stderr, "          --entity-name    Terminal entity name / serial number")
-		fmt.Fprintln(os.Stderr, "          --entity-type    Terminal type: lander/helios/portal")
+		fmt.Fprintln(os.Stderr, "          --entity-type    Terminal type: lander/helios/portal/dev-unit")
 		fmt.Fprintln(os.Stderr, "          --non-interactive Run without prompts, use flags and defaults")
 
 		fmt.Fprintln(os.Stderr, "")
