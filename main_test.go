@@ -428,7 +428,8 @@ func TestSetupFlags_PartialFlags(t *testing.T) {
 // applySetupEnvDefaults
 // ============================================================================
 
-// setEnvForTest sets an env var and restores it via t.Cleanup.
+// setEnvForTest sets an environment variable for the duration of the test
+// and restores the original value (or unsets it) via t.Cleanup.
 func setEnvForTest(t *testing.T, key, value string) {
 	t.Helper()
 	old, existed := os.LookupEnv(key)
@@ -442,7 +443,8 @@ func setEnvForTest(t *testing.T, key, value string) {
 	})
 }
 
-// unsetEnvForTest ensures an env var is unset and restores it via t.Cleanup.
+// unsetEnvForTest removes an environment variable for the duration of the test
+// and restores it via t.Cleanup if it was previously set.
 func unsetEnvForTest(t *testing.T, key string) {
 	t.Helper()
 	old, existed := os.LookupEnv(key)
@@ -454,6 +456,8 @@ func unsetEnvForTest(t *testing.T, key string) {
 	})
 }
 
+// TestApplySetupEnvDefaults_FillsEmptyFields verifies that all LEGION_AUTH_*
+// env vars populate the corresponding empty fields in setupFlagResult.
 func TestApplySetupEnvDefaults_FillsEmptyFields(t *testing.T) {
 	envVars := map[string]string{
 		"LEGION_AUTH_STORAGE_PATH":     "/env/storage",
@@ -514,6 +518,8 @@ func TestApplySetupEnvDefaults_FillsEmptyFields(t *testing.T) {
 	}
 }
 
+// TestApplySetupEnvDefaults_FlagsTakePrecedence verifies that CLI flags are
+// not overwritten by environment variables.
 func TestApplySetupEnvDefaults_FlagsTakePrecedence(t *testing.T) {
 	setEnvForTest(t, "LEGION_AUTH_API_URL", "https://env.example.com")
 	setEnvForTest(t, "LEGION_AUTH_USERNAME", "envuser")
@@ -542,6 +548,8 @@ func TestApplySetupEnvDefaults_FlagsTakePrecedence(t *testing.T) {
 	}
 }
 
+// TestApplySetupEnvDefaults_EmptyEnvIgnored verifies that empty or unset
+// environment variables do not populate fields.
 func TestApplySetupEnvDefaults_EmptyEnvIgnored(t *testing.T) {
 	setEnvForTest(t, "LEGION_AUTH_PASSWORD", "")
 	unsetEnvForTest(t, "LEGION_AUTH_USERNAME")
@@ -562,6 +570,8 @@ func TestApplySetupEnvDefaults_EmptyEnvIgnored(t *testing.T) {
 	}
 }
 
+// TestApplySetupEnvDefaults_BoolEnvVariants verifies that only "true" and "1"
+// enable boolean fields; other values are treated as false.
 func TestApplySetupEnvDefaults_BoolEnvVariants(t *testing.T) {
 	tests := []struct {
 		value string
@@ -594,6 +604,8 @@ func TestApplySetupEnvDefaults_BoolEnvVariants(t *testing.T) {
 	}
 }
 
+// TestApplySetupEnvDefaults_BoolFlagTrueIgnoresEnv verifies that a boolean
+// flag set to true via CLI is not reset by an env var set to "false".
 func TestApplySetupEnvDefaults_BoolFlagTrueIgnoresEnv(t *testing.T) {
 	setEnvForTest(t, "LEGION_AUTH_CREATE_ENTITY", "false")
 
@@ -610,6 +622,8 @@ func TestApplySetupEnvDefaults_BoolFlagTrueIgnoresEnv(t *testing.T) {
 	}
 }
 
+// TestApplySetupEnvDefaults_LegacyLegionAPIURL verifies that the deprecated
+// LEGION_API_URL env var is used as a fallback when LEGION_AUTH_API_URL is unset.
 func TestApplySetupEnvDefaults_LegacyLegionAPIURL(t *testing.T) {
 	unsetEnvForTest(t, "LEGION_AUTH_API_URL")
 	setEnvForTest(t, "LEGION_API_URL", "https://legacy.example.com")
@@ -627,6 +641,8 @@ func TestApplySetupEnvDefaults_LegacyLegionAPIURL(t *testing.T) {
 	}
 }
 
+// TestApplySetupEnvDefaults_NewAPIURLTakesPrecedenceOverLegacy verifies that
+// LEGION_AUTH_API_URL takes precedence over the deprecated LEGION_API_URL.
 func TestApplySetupEnvDefaults_NewAPIURLTakesPrecedenceOverLegacy(t *testing.T) {
 	setEnvForTest(t, "LEGION_AUTH_API_URL", "https://new.example.com")
 	setEnvForTest(t, "LEGION_API_URL", "https://legacy.example.com")
