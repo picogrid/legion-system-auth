@@ -433,12 +433,18 @@ func TestSetupFlags_PartialFlags(t *testing.T) {
 func setEnvForTest(t *testing.T, key, value string) {
 	t.Helper()
 	old, existed := os.LookupEnv(key)
-	os.Setenv(key, value)
+	if err := os.Setenv(key, value); err != nil {
+		t.Fatalf("set env %s: %v", key, err)
+	}
 	t.Cleanup(func() {
 		if existed {
-			os.Setenv(key, old)
+			if err := os.Setenv(key, old); err != nil {
+				t.Logf("warning: failed to restore env %s: %v", key, err)
+			}
 		} else {
-			os.Unsetenv(key)
+			if err := os.Unsetenv(key); err != nil {
+				t.Logf("warning: failed to unset env %s: %v", key, err)
+			}
 		}
 	})
 }
@@ -448,10 +454,18 @@ func setEnvForTest(t *testing.T, key, value string) {
 func unsetEnvForTest(t *testing.T, key string) {
 	t.Helper()
 	old, existed := os.LookupEnv(key)
-	os.Unsetenv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset env %s: %v", key, err)
+	}
 	t.Cleanup(func() {
 		if existed {
-			os.Setenv(key, old)
+			if err := os.Setenv(key, old); err != nil {
+				t.Logf("warning: failed to restore env %s: %v", key, err)
+			}
+		} else {
+			if err := os.Unsetenv(key); err != nil {
+				t.Logf("warning: failed to unset env %s: %v", key, err)
+			}
 		}
 	})
 }
@@ -599,6 +613,22 @@ func TestApplySetupEnvDefaults_BoolEnvVariants(t *testing.T) {
 
 			if r.Opts.CreateEntity != tt.want {
 				t.Errorf("CreateEntity = %v, want %v for env value %q", r.Opts.CreateEntity, tt.want, tt.value)
+			}
+		})
+
+		t.Run("NON_INTERACTIVE="+tt.value, func(t *testing.T) {
+			setEnvForTest(t, "LEGION_AUTH_NON_INTERACTIVE", tt.value)
+
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			r := registerSetupFlags(fs)
+			if err := fs.Parse([]string{}); err != nil {
+				t.Fatal(err)
+			}
+
+			applySetupEnvDefaults(r)
+
+			if r.Opts.NonInteractive != tt.want {
+				t.Errorf("NonInteractive = %v, want %v for env value %q", r.Opts.NonInteractive, tt.want, tt.value)
 			}
 		})
 	}
