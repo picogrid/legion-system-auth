@@ -242,6 +242,58 @@ func registerSetupFlags(fs *flag.FlagSet) *setupFlagResult {
 	return r
 }
 
+// applySetupEnvDefaults fills empty string fields with LEGION_AUTH_* environment
+// variables. Flags take precedence; env vars are fallbacks only.
+//
+// Mapping:
+//
+//	--storage-path     → LEGION_AUTH_STORAGE_PATH
+//	--api-url          → LEGION_AUTH_API_URL
+//	--username         → LEGION_AUTH_USERNAME
+//	--password         → LEGION_AUTH_PASSWORD
+//	--org-id           → LEGION_AUTH_ORG_ID
+//	--integration-name → LEGION_AUTH_INTEGRATION_NAME
+//	--description      → LEGION_AUTH_DESCRIPTION
+//	--version          → LEGION_AUTH_VERSION
+//	--redirect-url     → LEGION_AUTH_REDIRECT_URL
+//	--access-level     → LEGION_AUTH_ACCESS_LEVEL
+//	--entity-name      → LEGION_AUTH_ENTITY_NAME
+//	--entity-type      → LEGION_AUTH_ENTITY_TYPE
+//	--create-entity    → LEGION_AUTH_CREATE_ENTITY  ("true"/"1" to enable)
+//	--non-interactive  → LEGION_AUTH_NON_INTERACTIVE ("true"/"1" to enable)
+func applySetupEnvDefaults(r *setupFlagResult) {
+	envStr := func(ptr *string, envKey string) {
+		if *ptr == "" {
+			if v := os.Getenv(envKey); v != "" {
+				*ptr = v
+			}
+		}
+	}
+	envBool := func(ptr *bool, envKey string) {
+		if !*ptr {
+			if v := os.Getenv(envKey); v == "true" || v == "1" {
+				*ptr = true
+			}
+		}
+	}
+
+	envStr(&r.StoragePath, "LEGION_AUTH_STORAGE_PATH")
+	envStr(&r.Opts.APIURL, "LEGION_AUTH_API_URL")
+	envStr(&r.Opts.APIURL, "LEGION_API_URL") // deprecated; prefer LEGION_AUTH_API_URL
+	envStr(&r.Opts.Username, "LEGION_AUTH_USERNAME")
+	envStr(&r.Opts.Password, "LEGION_AUTH_PASSWORD")
+	envStr(&r.Opts.OrgID, "LEGION_AUTH_ORG_ID")
+	envStr(&r.Opts.IntegrationName, "LEGION_AUTH_INTEGRATION_NAME")
+	envStr(&r.Opts.Description, "LEGION_AUTH_DESCRIPTION")
+	envStr(&r.Opts.Version, "LEGION_AUTH_VERSION")
+	envStr(&r.Opts.RedirectURL, "LEGION_AUTH_REDIRECT_URL")
+	envStr(&r.Opts.AccessLevel, "LEGION_AUTH_ACCESS_LEVEL")
+	envStr(&r.Opts.EntityName, "LEGION_AUTH_ENTITY_NAME")
+	envStr(&r.Opts.EntityType, "LEGION_AUTH_ENTITY_TYPE")
+	envBool(&r.Opts.CreateEntity, "LEGION_AUTH_CREATE_ENTITY")
+	envBool(&r.Opts.NonInteractive, "LEGION_AUTH_NON_INTERACTIVE")
+}
+
 // HTTPError represents an HTTP error response with status code
 type HTTPError struct {
 	StatusCode int
@@ -1432,7 +1484,7 @@ func interactiveSetup(opts setupOpts) error {
 	// Upfront validation for non-interactive mode: fail fast on missing required flags.
 	if opts.NonInteractive {
 		var missing []string
-		if opts.APIURL == "" && os.Getenv("LEGION_API_URL") == "" {
+		if opts.APIURL == "" {
 			missing = append(missing, "--api-url")
 		}
 		if opts.Username == "" {
@@ -1481,9 +1533,6 @@ func interactiveSetup(opts setupOpts) error {
 	}
 
 	apiURL := opts.APIURL
-	if apiURL == "" {
-		apiURL = os.Getenv("LEGION_API_URL")
-	}
 	if apiURL == "" {
 		apiURL = selectLegionEnvironment()
 	}
@@ -2122,6 +2171,7 @@ func main() {
 				printError(fmt.Sprintf("Failed to parse setup flags: %v", err))
 				os.Exit(1)
 			}
+			applySetupEnvDefaults(setupFlags)
 
 			if err := setupStorage(setupFlags.StoragePath); err != nil {
 				printError(fmt.Sprintf("Storage setup failed: %v", err))
