@@ -365,7 +365,8 @@ func inputPrompt(prompt string) string {
 	if err != nil {
 		if err == io.EOF {
 			fmt.Println()
-			os.Exit(0)
+			printError("EOF on stdin (running non-interactively without required flags?)")
+			os.Exit(1)
 		}
 		return ""
 	}
@@ -661,20 +662,24 @@ func selectLegionEnvironment() string {
 	}
 }
 
-func getWellKnownConfig(legionAPIURL string, skipOverride bool) OAuthConfig {
+func getWellKnownConfig(legionAPIURL string, nonInteractive bool) OAuthConfig {
 	wellKnownURL := fmt.Sprintf("%s/v3/.well-known/oauth-authorization-server", legionAPIURL)
 	printInfo(fmt.Sprintf("Fetching OAuth configuration from %s", wellKnownURL))
 
 	var config OAuthConfig
 	err := makeRequestJSON("GET", wellKnownURL, nil, nil, &config)
 	if err != nil || config.TokenEndpoint == "" {
+		if nonInteractive {
+			printError(fmt.Sprintf("Failed to fetch OAuth config from %s (cannot prompt for fallback in non-interactive mode)", wellKnownURL))
+			os.Exit(1)
+		}
 		printWarning("Using fallback configuration")
 		return getKeycloakFallbackConfig()
 	}
 
 	printSuccess(fmt.Sprintf("Found Keycloak at: %s", config.Issuer))
 
-	if skipOverride {
+	if nonInteractive {
 		return config
 	}
 
