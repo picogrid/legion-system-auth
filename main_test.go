@@ -425,6 +425,272 @@ func TestSetupFlags_PartialFlags(t *testing.T) {
 }
 
 // ============================================================================
+// applySetupEnvDefaults
+// ============================================================================
+
+// setEnvForTest sets an environment variable for the duration of the test
+// and restores the original value (or unsets it) via t.Cleanup.
+func setEnvForTest(t *testing.T, key, value string) {
+	t.Helper()
+	old, existed := os.LookupEnv(key)
+	if err := os.Setenv(key, value); err != nil {
+		t.Fatalf("set env %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			if err := os.Setenv(key, old); err != nil {
+				t.Logf("warning: failed to restore env %s: %v", key, err)
+			}
+		} else {
+			if err := os.Unsetenv(key); err != nil {
+				t.Logf("warning: failed to unset env %s: %v", key, err)
+			}
+		}
+	})
+}
+
+// unsetEnvForTest removes an environment variable for the duration of the test
+// and restores it via t.Cleanup if it was previously set.
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	old, existed := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset env %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			if err := os.Setenv(key, old); err != nil {
+				t.Logf("warning: failed to restore env %s: %v", key, err)
+			}
+		} else {
+			if err := os.Unsetenv(key); err != nil {
+				t.Logf("warning: failed to unset env %s: %v", key, err)
+			}
+		}
+	})
+}
+
+// TestApplySetupEnvDefaults_FillsEmptyFields verifies that all LEGION_AUTH_*
+// env vars populate the corresponding empty fields in setupFlagResult.
+func TestApplySetupEnvDefaults_FillsEmptyFields(t *testing.T) {
+	envVars := map[string]string{
+		"LEGION_AUTH_STORAGE_PATH":     "/env/storage",
+		"LEGION_AUTH_API_URL":          "https://env.example.com",
+		"LEGION_AUTH_USERNAME":         "envuser",
+		"LEGION_AUTH_PASSWORD":         "envpass",
+		"LEGION_AUTH_ORG_ID":           "env-org",
+		"LEGION_AUTH_INTEGRATION_NAME": "env-integration",
+		"LEGION_AUTH_DESCRIPTION":      "env description",
+		"LEGION_AUTH_VERSION":          "9.0.0",
+		"LEGION_AUTH_REDIRECT_URL":     "http://env.example.com/cb",
+		"LEGION_AUTH_ACCESS_LEVEL":     "admin",
+		"LEGION_AUTH_ENTITY_NAME":      "ENV-SERIAL",
+		"LEGION_AUTH_ENTITY_TYPE":      "helios",
+		"LEGION_AUTH_CREATE_ENTITY":    "true",
+		"LEGION_AUTH_NON_INTERACTIVE":  "1",
+	}
+	for k, v := range envVars {
+		setEnvForTest(t, k, v)
+	}
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	r := registerSetupFlags(fs)
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatal(err)
+	}
+
+	applySetupEnvDefaults(r)
+
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"StoragePath", r.StoragePath, "/env/storage"},
+		{"APIURL", r.Opts.APIURL, "https://env.example.com"},
+		{"Username", r.Opts.Username, "envuser"},
+		{"Password", r.Opts.Password, "envpass"},
+		{"OrgID", r.Opts.OrgID, "env-org"},
+		{"IntegrationName", r.Opts.IntegrationName, "env-integration"},
+		{"Description", r.Opts.Description, "env description"},
+		{"Version", r.Opts.Version, "9.0.0"},
+		{"RedirectURL", r.Opts.RedirectURL, "http://env.example.com/cb"},
+		{"AccessLevel", r.Opts.AccessLevel, "admin"},
+		{"EntityName", r.Opts.EntityName, "ENV-SERIAL"},
+		{"EntityType", r.Opts.EntityType, "helios"},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
+		}
+	}
+	if !r.Opts.CreateEntity {
+		t.Error("CreateEntity should be true from env")
+	}
+	if !r.Opts.NonInteractive {
+		t.Error("NonInteractive should be true from env")
+	}
+}
+
+// TestApplySetupEnvDefaults_FlagsTakePrecedence verifies that CLI flags are
+// not overwritten by environment variables.
+func TestApplySetupEnvDefaults_FlagsTakePrecedence(t *testing.T) {
+	setEnvForTest(t, "LEGION_AUTH_API_URL", "https://env.example.com")
+	setEnvForTest(t, "LEGION_AUTH_USERNAME", "envuser")
+	setEnvForTest(t, "LEGION_AUTH_PASSWORD", "envpass")
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	r := registerSetupFlags(fs)
+	if err := fs.Parse([]string{
+		"--api-url", "https://flag.example.com",
+		"--username", "flaguser",
+		"--password", "flagpass",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	applySetupEnvDefaults(r)
+
+	if r.Opts.APIURL != "https://flag.example.com" {
+		t.Errorf("APIURL = %q, want flag value", r.Opts.APIURL)
+	}
+	if r.Opts.Username != "flaguser" {
+		t.Errorf("Username = %q, want flag value", r.Opts.Username)
+	}
+	if r.Opts.Password != "flagpass" {
+		t.Errorf("Password = %q, want flag value", r.Opts.Password)
+	}
+}
+
+// TestApplySetupEnvDefaults_EmptyEnvIgnored verifies that empty or unset
+// environment variables do not populate fields.
+func TestApplySetupEnvDefaults_EmptyEnvIgnored(t *testing.T) {
+	setEnvForTest(t, "LEGION_AUTH_PASSWORD", "")
+	unsetEnvForTest(t, "LEGION_AUTH_USERNAME")
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	r := registerSetupFlags(fs)
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatal(err)
+	}
+
+	applySetupEnvDefaults(r)
+
+	if r.Opts.Password != "" {
+		t.Errorf("Password = %q, want empty (empty env should not set)", r.Opts.Password)
+	}
+	if r.Opts.Username != "" {
+		t.Errorf("Username = %q, want empty (unset env should not set)", r.Opts.Username)
+	}
+}
+
+// TestApplySetupEnvDefaults_BoolEnvVariants verifies that only "true" and "1"
+// enable boolean fields; other values are treated as false.
+func TestApplySetupEnvDefaults_BoolEnvVariants(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"true", true},
+		{"1", true},
+		{"false", false},
+		{"0", false},
+		{"yes", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run("CREATE_ENTITY="+tt.value, func(t *testing.T) {
+			setEnvForTest(t, "LEGION_AUTH_CREATE_ENTITY", tt.value)
+
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			r := registerSetupFlags(fs)
+			if err := fs.Parse([]string{}); err != nil {
+				t.Fatal(err)
+			}
+
+			applySetupEnvDefaults(r)
+
+			if r.Opts.CreateEntity != tt.want {
+				t.Errorf("CreateEntity = %v, want %v for env value %q", r.Opts.CreateEntity, tt.want, tt.value)
+			}
+		})
+
+		t.Run("NON_INTERACTIVE="+tt.value, func(t *testing.T) {
+			setEnvForTest(t, "LEGION_AUTH_NON_INTERACTIVE", tt.value)
+
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			r := registerSetupFlags(fs)
+			if err := fs.Parse([]string{}); err != nil {
+				t.Fatal(err)
+			}
+
+			applySetupEnvDefaults(r)
+
+			if r.Opts.NonInteractive != tt.want {
+				t.Errorf("NonInteractive = %v, want %v for env value %q", r.Opts.NonInteractive, tt.want, tt.value)
+			}
+		})
+	}
+}
+
+// TestApplySetupEnvDefaults_BoolFlagTrueIgnoresEnv verifies that a boolean
+// flag set to true via CLI is not reset by an env var set to "false".
+func TestApplySetupEnvDefaults_BoolFlagTrueIgnoresEnv(t *testing.T) {
+	setEnvForTest(t, "LEGION_AUTH_CREATE_ENTITY", "false")
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	r := registerSetupFlags(fs)
+	if err := fs.Parse([]string{"--create-entity"}); err != nil {
+		t.Fatal(err)
+	}
+
+	applySetupEnvDefaults(r)
+
+	if !r.Opts.CreateEntity {
+		t.Error("CreateEntity should remain true from flag despite env=false")
+	}
+}
+
+// TestApplySetupEnvDefaults_LegacyLegionAPIURL verifies that the deprecated
+// LEGION_API_URL env var is used as a fallback when LEGION_AUTH_API_URL is unset.
+func TestApplySetupEnvDefaults_LegacyLegionAPIURL(t *testing.T) {
+	unsetEnvForTest(t, "LEGION_AUTH_API_URL")
+	setEnvForTest(t, "LEGION_API_URL", "https://legacy.example.com")
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	r := registerSetupFlags(fs)
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatal(err)
+	}
+
+	applySetupEnvDefaults(r)
+
+	if r.Opts.APIURL != "https://legacy.example.com" {
+		t.Errorf("APIURL = %q, want legacy env value", r.Opts.APIURL)
+	}
+}
+
+// TestApplySetupEnvDefaults_NewAPIURLTakesPrecedenceOverLegacy verifies that
+// LEGION_AUTH_API_URL takes precedence over the deprecated LEGION_API_URL.
+func TestApplySetupEnvDefaults_NewAPIURLTakesPrecedenceOverLegacy(t *testing.T) {
+	setEnvForTest(t, "LEGION_AUTH_API_URL", "https://new.example.com")
+	setEnvForTest(t, "LEGION_API_URL", "https://legacy.example.com")
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	r := registerSetupFlags(fs)
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatal(err)
+	}
+
+	applySetupEnvDefaults(r)
+
+	if r.Opts.APIURL != "https://new.example.com" {
+		t.Errorf("APIURL = %q, want new env value over legacy", r.Opts.APIURL)
+	}
+}
+
+// ============================================================================
 // setupOpts zero value = fully interactive
 // ============================================================================
 
