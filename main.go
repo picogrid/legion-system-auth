@@ -662,13 +662,25 @@ func selectLegionEnvironment() string {
 	}
 }
 
+func fetchWellKnownConfig(legionAPIURL string) (OAuthConfig, error) {
+	wellKnownURL := fmt.Sprintf("%s/v3/.well-known/oauth-authorization-server", legionAPIURL)
+
+	var config OAuthConfig
+	if err := makeRequestJSON("GET", wellKnownURL, nil, nil, &config); err != nil {
+		return OAuthConfig{}, err
+	}
+	if config.TokenEndpoint == "" {
+		return OAuthConfig{}, fmt.Errorf("oauth configuration from %s did not include token_endpoint", wellKnownURL)
+	}
+	return config, nil
+}
+
 func getWellKnownConfig(legionAPIURL string, nonInteractive bool) OAuthConfig {
 	wellKnownURL := fmt.Sprintf("%s/v3/.well-known/oauth-authorization-server", legionAPIURL)
 	printInfo(fmt.Sprintf("Fetching OAuth configuration from %s", wellKnownURL))
 
-	var config OAuthConfig
-	err := makeRequestJSON("GET", wellKnownURL, nil, nil, &config)
-	if err != nil || config.TokenEndpoint == "" {
+	config, err := fetchWellKnownConfig(legionAPIURL)
+	if err != nil {
 		if nonInteractive {
 			printError(fmt.Sprintf("Failed to fetch OAuth config from %s (cannot prompt for fallback in non-interactive mode)", wellKnownURL))
 			os.Exit(1)
@@ -688,6 +700,31 @@ func getWellKnownConfig(legionAPIURL string, nonInteractive bool) OAuthConfig {
 		return getKeycloakFallbackConfig()
 	}
 	return config
+}
+
+func validateSetupOptionValues(opts setupOpts) error {
+	if opts.EntityType != "" {
+		valid := false
+		for _, t := range validEntityTypes {
+			if t == opts.EntityType {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("unknown entity type %q, must be one of: %s", opts.EntityType, strings.Join(validEntityTypes, ", "))
+		}
+	}
+
+	if opts.AccessLevel != "" {
+		switch opts.AccessLevel {
+		case "viewer", "operator", "admin":
+		default:
+			return fmt.Errorf("unknown access level %q, must be one of: viewer, operator, admin", opts.AccessLevel)
+		}
+	}
+
+	return nil
 }
 
 func getKeycloakFallbackConfig() OAuthConfig {
@@ -785,14 +822,13 @@ func createManifestInteractively(opts setupOpts) Manifest {
 			}
 		}
 	}
+	if opts.NonInteractive {
+		return defaultManifestFromOpts(opts)
+	}
 
 	defaultName := "Portal Integration"
-	var name string
-	if opts.IntegrationName != "" {
-		name = opts.IntegrationName
-	} else if opts.NonInteractive {
-		name = defaultName
-	} else {
+	name := opts.IntegrationName
+	if name == "" {
 		name = inputPrompt(fmt.Sprintf("   Name [%s]: ", defaultName))
 		if name == "" {
 			name = defaultName
@@ -800,12 +836,8 @@ func createManifestInteractively(opts setupOpts) Manifest {
 	}
 
 	defaultDesc := "OAuth integration for portal authentication"
-	var desc string
-	if opts.Description != "" {
-		desc = opts.Description
-	} else if opts.NonInteractive {
-		desc = defaultDesc
-	} else {
+	desc := opts.Description
+	if desc == "" {
 		desc = inputPrompt("   Description [OAuth integration...]: ")
 		if desc == "" {
 			desc = defaultDesc
@@ -813,12 +845,8 @@ func createManifestInteractively(opts setupOpts) Manifest {
 	}
 
 	defaultVer := "1.0.0"
-	var ver string
-	if opts.Version != "" {
-		ver = opts.Version
-	} else if opts.NonInteractive {
-		ver = defaultVer
-	} else {
+	ver := opts.Version
+	if ver == "" {
 		ver = inputPrompt("   Version [1.0.0]: ")
 		if ver == "" {
 			ver = defaultVer
@@ -826,12 +854,8 @@ func createManifestInteractively(opts setupOpts) Manifest {
 	}
 
 	defaultRedirect := "http://localhost:8000/oauth_callback"
-	var redirect string
-	if opts.RedirectURL != "" {
-		redirect = opts.RedirectURL
-	} else if opts.NonInteractive {
-		redirect = defaultRedirect
-	} else {
+	redirect := opts.RedirectURL
+	if redirect == "" {
 		redirect = inputPrompt("   Redirect URL [http://localhost:8000/oauth_callback]: ")
 		if redirect == "" {
 			redirect = defaultRedirect
@@ -844,15 +868,7 @@ func createManifestInteractively(opts setupOpts) Manifest {
 	var scopes []string
 
 	if opts.AccessLevel != "" {
-		switch opts.AccessLevel {
-		case "viewer", "operator", "admin":
-			permissions = getPermissionsForRelation(opts.AccessLevel)
-		default:
-			printWarning(fmt.Sprintf("Unknown access level %q, defaulting to operator", opts.AccessLevel))
-			permissions = getPermissionsForRelation("operator")
-		}
-	} else if opts.NonInteractive {
-		permissions = getPermissionsForRelation("operator")
+		permissions = getPermissionsForRelation(opts.AccessLevel)
 	} else {
 		// Ask if they want to use permissions or legacy scopes
 		printColored("\nPermission Configuration", ColorCyan, false)
@@ -1183,8 +1199,10 @@ type OAuthResult struct {
 	ErrorDescription string
 }
 
-func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
-	printInfo("\n→ Starting headless OAuth flow...")
+func performHeadlessOAuthFlow(config AppConfig, userToken string, verbose bool) (*StoredToken, error) {
+	if verbose {
+		printInfo("\n→ Starting headless OAuth flow...")
+	}
 
 	// 1. Start Local Server
 	redirectURL, _ := url.Parse(config.RedirectURL)
@@ -1234,14 +1252,12 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 	// 2. Prepare PKCE
 	verifier, err := generateCodeVerifier()
 	if err != nil {
-		printError(fmt.Sprintf("Failed to generate code verifier: %v", err))
-		return false
+		return nil, fmt.Errorf("failed to generate code verifier: %w", err)
 	}
 	challenge := generateCodeChallenge(verifier)
 	state, err := generateState()
 	if err != nil {
-		printError(fmt.Sprintf("Failed to generate state: %v", err))
-		return false
+		return nil, fmt.Errorf("failed to generate state: %w", err)
 	}
 
 	// 3. Construct Auth URL
@@ -1258,12 +1274,13 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 	authURL := fmt.Sprintf("%s/v3/integrations/oauth/authorize?%s", config.LegionBaseURL, params.Encode())
 
 	// 4. Make Request with User Token (Headless trigger)
-	printInfo("→ Making authorization request...")
+	if verbose {
+		printInfo("→ Making authorization request...")
+	}
 
 	req, err := http.NewRequest("GET", authURL, nil)
 	if err != nil {
-		printError(fmt.Sprintf("Failed to create auth request: %v", err))
-		return false
+		return nil, fmt.Errorf("failed to create auth request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+userToken)
 	req.Header.Set("X-ORG-ID", config.OrganizationID)
@@ -1289,22 +1306,21 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 	select {
 	case res := <-resultChan:
 		if res.Error != "" {
-			printError(fmt.Sprintf("OAuth error: %s", res.Error))
-			return false
+			return nil, fmt.Errorf("oauth error: %s: %s", res.Error, res.ErrorDescription)
 		}
 		if res.State != state {
-			printError("State mismatch!")
-			return false
+			return nil, errors.New("oauth state mismatch")
 		}
-		return exchangeCodeForTokens(config, res.Code, verifier)
+		return exchangeCodeForTokens(config, res.Code, verifier, verbose)
 	case <-time.After(30 * time.Second):
-		printError("Timeout waiting for OAuth callback")
-		return false
+		return nil, errors.New("timeout waiting for oauth callback")
 	}
 }
 
-func exchangeCodeForTokens(config AppConfig, code, verifier string) bool {
-	printInfo("→ Exchanging code for tokens...")
+func exchangeCodeForTokens(config AppConfig, code, verifier string, verbose bool) (*StoredToken, error) {
+	if verbose {
+		printInfo("→ Exchanging code for tokens...")
+	}
 
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
@@ -1325,37 +1341,22 @@ func exchangeCodeForTokens(config AppConfig, code, verifier string) bool {
 	urlStr := fmt.Sprintf("%s/v3/integrations/oauth/token", config.LegionBaseURL)
 
 	if err := makeRequestJSON("POST", urlStr, data, headers, &resp); err != nil {
-		printError(fmt.Sprintf("Token exchange failed: %v", err))
-		return false
+		return nil, fmt.Errorf("token exchange failed: %w", err)
 	}
 
 	expiresAt := time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
 
-	// Save Token
-	tokenData := StoredToken{
+	tokenData := &StoredToken{
 		AccessToken:    resp.AccessToken,
 		RefreshToken:   resp.RefreshToken,
 		ExpiresAt:      expiresAt.Format(time.RFC3339),
 		Scope:          resp.Scope,
 		OrganizationID: config.OrganizationID,
 	}
-
-	if err := saveJSON(AccessTokenFile, tokenData); err != nil {
-		printError(fmt.Sprintf("Failed to save access token: %v", err))
-		return false
+	if verbose {
+		printSuccess("OAuth flow complete!")
 	}
-
-	if resp.RefreshToken != "" {
-		if err := saveJSON(RefreshTokenFile, StoredToken{
-			RefreshToken:   resp.RefreshToken,
-			OrganizationID: config.OrganizationID,
-		}); err != nil {
-			printError(fmt.Sprintf("Failed to save refresh token: %v", err))
-		}
-	}
-
-	printSuccess("OAuth flow complete!")
-	return true
+	return tokenData, nil
 }
 func saveJSON(path string, data interface{}) error {
 	file, err := json.MarshalIndent(data, "", "  ")
@@ -1514,27 +1515,8 @@ func interactiveSetup(opts setupOpts) error {
 		}
 	}
 
-	// Validate --entity-type value early (applies to both interactive and non-interactive).
-	if opts.EntityType != "" {
-		valid := false
-		for _, t := range validEntityTypes {
-			if t == opts.EntityType {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			return fmt.Errorf("unknown entity type %q, must be one of: %s", opts.EntityType, strings.Join(validEntityTypes, ", "))
-		}
-	}
-
-	// Validate --access-level value early (applies to both interactive and non-interactive).
-	if opts.AccessLevel != "" {
-		switch opts.AccessLevel {
-		case "viewer", "operator", "admin":
-		default:
-			return fmt.Errorf("unknown access level %q, must be one of: viewer, operator, admin", opts.AccessLevel)
-		}
+	if err := validateSetupOptionValues(opts); err != nil {
+		return err
 	}
 
 	apiURL := opts.APIURL
@@ -1593,120 +1575,11 @@ func interactiveSetup(opts setupOpts) error {
 		org = selectOrganization(orgs)
 	}
 
-	manifest := createManifestInteractively(opts)
-
-	printInfo("\nCreating integration...")
-	integ, err := createIntegration(apiURL, token, org.OrganizationID, manifest)
+	state, err := prepareConfiguredState(apiURL, token, org, createManifestInteractively(opts), opts, true)
 	if err != nil {
-		var httpErr *HTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
-			printWarning("Integration exists.")
-			if opts.NonInteractive {
-				integ = findIntegrationByName(apiURL, token, org.OrganizationID, manifest.Name)
-			} else {
-				integ = selectExistingIntegrationPaginated(apiURL, token, org.OrganizationID)
-			}
-		} else {
-			return fmt.Errorf("failed to create integration: %w", err)
-		}
+		return err
 	}
-
-	if integ == nil {
-		return fmt.Errorf("no integration selected")
-	}
-
-	// Get OAuth Credentials
-	var clientID, clientSecret string
-	if integ.OAuthConfig != nil {
-		clientID = integ.OAuthConfig.ClientID
-		clientSecret = integ.OAuthConfig.ClientSecret
-	}
-
-	// Update manifest from integration if available
-	if len(integ.Manifest) > 0 {
-		var m Manifest
-		if err := json.Unmarshal(integ.Manifest, &m); err == nil {
-			manifest = m
-		}
-	}
-
-	if clientID == "" {
-		cfg, err := getIntegrationOAuthConfig(apiURL, token, org.OrganizationID, integ.ID)
-		if err == nil {
-			clientID = cfg.ClientID
-			clientSecret = cfg.ClientSecret
-		}
-	}
-
-	if clientID != "" && (clientSecret == "" || clientSecret == "[REDACTED]") {
-		printWarning("Regenerating client secret...")
-		clientSecret, err = regenerateClientSecret(apiURL, token, org.OrganizationID, integ.ID)
-		if err != nil {
-			return fmt.Errorf("failed to regenerate client secret: %w", err)
-		}
-	}
-
-	redirectURL := ""
-	if len(manifest.OAuthConfig.RedirectURLs) > 0 {
-		redirectURL = manifest.OAuthConfig.RedirectURLs[0]
-	}
-
-	config := AppConfig{
-		IntegrationID:    integ.ID,
-		ClientID:         clientID,
-		ClientSecret:     clientSecret,
-		RedirectURL:      redirectURL,
-		OrganizationID:   org.OrganizationID,
-		OrganizationName: org.OrganizationName,
-		LegionBaseURL:    apiURL,
-		Manifest:         manifest,
-	}
-
-	if err := saveJSON(ConfigFile, config); err != nil {
-		return fmt.Errorf("critical: failed to save configuration: %w", err)
-	}
-
-	// Initial User Token Save
-	printInfo("\n→ Saving authentication token...")
-	if err := saveJSON(AccessTokenFile, StoredToken{
-		AccessToken:    token,
-		ExpiresAt:      time.Now().Add(1 * time.Hour).Format(time.RFC3339),
-		OrganizationID: org.OrganizationID,
-	}); err != nil {
-		return fmt.Errorf("failed to save access token: %w", err)
-	}
-
-	// Perform Headless
-	if performHeadlessOAuthFlow(config, token) {
-		// Update config with bridge token
-		content, err := os.ReadFile(AccessTokenFile)
-		if err != nil {
-			return fmt.Errorf("failed to read access token file: %w", err)
-		}
-		var t StoredToken
-		if err := json.Unmarshal(content, &t); err != nil {
-			return fmt.Errorf("failed to unmarshal access token from %s: %w", AccessTokenFile, err)
-		}
-		config.AccessToken = t.AccessToken
-		if err := saveJSON(ConfigFile, config); err != nil {
-			printError(fmt.Sprintf("Failed to update config with bridge token: %v", err))
-		}
-	}
-
-	// Entity creation
-	if opts.CreateEntity {
-		createEntityToken := config.AccessToken
-		if createEntityToken == "" {
-			createEntityToken = token
-			printWarning("Headless OAuth token unavailable; using initial user token for entity creation.")
-		}
-		if createEntityToken == "" {
-			return fmt.Errorf("no access token available for entity creation")
-		}
-		createTerminalEntity(apiURL, config.OrganizationID, config.IntegrationID, createEntityToken, opts)
-	}
-
-	return nil
+	return commitConfiguredState(state)
 }
 
 var errEntityNotFound = errors.New("entity not found")
@@ -1930,164 +1803,6 @@ func resolveEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map
 	return entity, "search", nil
 }
 
-func createTerminalEntity(apiURL, orgID, integID, token string, opts setupOpts) {
-	printColored("\n→ Creating terminal entity...", ColorCyan, true)
-
-	cachedEntity, cacheErr := loadCachedTerminalEntity()
-	if cacheErr == nil {
-		cachedID := entityIDFromMap(cachedEntity)
-		if cachedID == "" {
-			if !confirmRecreateEntity("Cached terminal entity is missing an id.", opts.NonInteractive) {
-				printInfo("Keeping cached terminal entity. Setup cancelled.")
-				return
-			}
-			printInfo("Proceeding with terminal entity recreation.")
-		} else {
-			resolved, fetchErr := fetchEntityByID(apiURL, orgID, token, cachedID)
-			if fetchErr != nil {
-				if errors.Is(fetchErr, errEntityNotFound) {
-					if !confirmRecreateEntity("Cached terminal entity no longer exists on server.", opts.NonInteractive) {
-						printInfo("Keeping cached terminal entity. Setup cancelled.")
-						return
-					}
-					printInfo("Proceeding with terminal entity recreation.")
-				} else {
-					printError(fmt.Sprintf("Failed to validate cached terminal entity id %s: %v", cachedID, fetchErr))
-					return
-				}
-			} else {
-				if saveErr := saveJSON(TerminalEntityFile, resolved); saveErr != nil {
-					printError(fmt.Sprintf("Failed to save terminal entity: %v", saveErr))
-					return
-				}
-
-				printSuccess("Using cached terminal entity. Remove terminal_entity.json to provision a different entity.")
-				return
-			}
-		}
-	}
-	if !errors.Is(cacheErr, errEntityNotFound) {
-		if !confirmRecreateEntity(fmt.Sprintf("Cached terminal entity is unreadable: %v", cacheErr), opts.NonInteractive) {
-			printInfo("Keeping cached terminal entity. Setup cancelled.")
-			return
-		}
-		printInfo("Proceeding with terminal entity recreation.")
-	}
-
-	var sn string
-	if opts.EntityName != "" {
-		sn = opts.EntityName
-	} else if opts.NonInteractive {
-		printError("--entity-name is required when using --create-entity with --non-interactive")
-		return
-	} else {
-		sn = inputPrompt("Terminal Serial Number: ")
-		if sn == "" {
-			return
-		}
-	}
-
-	var tType string
-	if opts.EntityType != "" {
-		valid := false
-		for _, t := range validEntityTypes {
-			if t == opts.EntityType {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			printError(fmt.Sprintf("Unknown entity type %q, must be one of: %s", opts.EntityType, strings.Join(validEntityTypes, ", ")))
-			return
-		}
-		tType = opts.EntityType
-	} else if opts.NonInteractive {
-		printError("--entity-type is required when using --create-entity with --non-interactive")
-		return
-	} else {
-		fmt.Println("Available types:")
-		for i, t := range validEntityTypes {
-			fmt.Printf("  %d. %s\n", i+1, t)
-		}
-		typeChoice := inputPrompt(fmt.Sprintf("Select type (1-%d): ", len(validEntityTypes)))
-		idx, err := strconv.Atoi(typeChoice)
-		if err != nil || idx < 1 || idx > len(validEntityTypes) {
-			printError(fmt.Sprintf("Invalid selection %q", typeChoice))
-			return
-		}
-		tType = validEntityTypes[idx-1]
-	}
-
-	payload := map[string]interface{}{
-		"organization_id": orgID,
-		"integration_id":  integID,
-		"name":            strings.ToUpper(sn),
-		"category":        "DEVICE",
-		"type":            "Terminal",
-		"status":          "active",
-		"affiliation":     "FRIEND",
-		"metadata": map[string]string{
-			"manufacturer":  "picogrid",
-			"serial_number": strings.ToLower(sn),
-			"terminal_type": tType,
-		},
-	}
-
-	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
-
-	// Resolve by immutable serial number before creation. If lookup fails, fail closed to avoid duplicates.
-	existing, source, resolveErr := resolveEntityBySerialNumber(apiURL, orgID, token, sn)
-	if resolveErr == nil {
-		if saveErr := saveJSON(TerminalEntityFile, existing); saveErr != nil {
-			printError(fmt.Sprintf("Failed to save terminal entity: %v", saveErr))
-			return
-		}
-		printSuccess(fmt.Sprintf("Found existing terminal entity by serial number via %s. Skipping creation.", source))
-		return
-	}
-	if !errors.Is(resolveErr, errEntityNotFound) {
-		printError(fmt.Sprintf("Failed to verify existing terminal entity: %v", resolveErr))
-		printError("Aborting entity creation to avoid duplicate entities.")
-		return
-	}
-
-	var resp map[string]interface{}
-	err := makeRequestJSON("POST", fmt.Sprintf("%s/v3/entities", apiURL), payload, headers, &resp)
-	if err != nil {
-		var httpErr *HTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
-			printWarning("Entity create returned 409 conflict. Resolving existing entity by serial number...")
-			fetchedEntity, fetchErr := fetchEntityBySerialNumberWithRetry(apiURL, orgID, token, sn, 5, 200*time.Millisecond, true)
-			if fetchErr != nil {
-				if errors.Is(fetchErr, errEntityNotFound) {
-					printError("Create conflicted on entity name, but no terminal entity was found with this serial_number.")
-					printError("An existing entity likely has this name with different metadata.serial_number. Rename that entity or use the matching serial number.")
-					return
-				}
-				printError(fmt.Sprintf("Failed to resolve conflicting entity by serial number: %v", fetchErr))
-				printError("Terminal entity setup failed. Creation was rejected and identity could not be resolved.")
-				return
-			}
-			if saveErr := saveJSON(TerminalEntityFile, fetchedEntity); saveErr != nil {
-				printError(fmt.Sprintf("Failed to save terminal entity: %v", saveErr))
-				printError("Terminal entity setup failed. The entity was retrieved but could not be saved.")
-				return
-			}
-			printSuccess("Resolved conflict and saved existing terminal entity by serial number.")
-			return
-		}
-		printError(fmt.Sprintf("Failed to create terminal entity: %v", err))
-		return
-	}
-
-	if err := saveJSON(TerminalEntityFile, resp); err != nil {
-		printError(fmt.Sprintf("Failed to save terminal entity: %v", err))
-		printError("Terminal entity was created but could not be saved locally.")
-		return
-	}
-	printSuccess("Terminal Entity Created!")
-}
-
 // ============================================================================
 // Main Execution
 // ============================================================================
@@ -2110,11 +1825,15 @@ func main() {
 	installServiceUser := installCmd.String("service-user", "", "User to run the service as (Linux system-level only)")
 	installServiceGroup := installCmd.String("service-group", "", "Group to run the service as (Linux system-level only, default: primary group of service user)")
 	installUserLevel := installCmd.Bool("user", false, "Install as user-level service (no sudo required)")
+	installAdminBind := installCmd.String("admin-bind", "", "HTTPS admin API bind address for daemon mode (host:port)")
+	installDaemonAPIURL := installCmd.String("api-url", "", "Legion API URL for unconfigured daemon mode")
 
 	uninstallCmd := flag.NewFlagSet("uninstall-service", flag.ExitOnError)
 	uninstallUserLevel := uninstallCmd.Bool("user", false, "Uninstall user-level service")
 
 	storagePathFlag := flag.String("storage-path", "", "Custom storage path")
+	adminBindFlag := flag.String("admin-bind", "", "HTTPS admin API bind address for daemon mode (host:port)")
+	daemonAPIURLFlag := flag.String("api-url", "", "Legion API URL for unconfigured daemon mode")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [command] [options]\n\n", os.Args[0])
@@ -2145,6 +1864,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "          --storage-path   Custom storage path")
 		fmt.Fprintln(os.Stderr, "          --service-user   User to run service as (Linux system-level only, default: pg if exists, else root)")
 		fmt.Fprintln(os.Stderr, "          --service-group  Group to run service as (Linux system-level only, default: primary group of service user)")
+		fmt.Fprintln(os.Stderr, "          --admin-bind     HTTPS admin API bind address for daemon mode")
+		fmt.Fprintln(os.Stderr, "          --api-url        Legion API URL for unconfigured daemon mode")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  uninstall-service")
 		fmt.Fprintln(os.Stderr, "        Uninstall the service (systemd/Launchd)")
@@ -2210,7 +1931,10 @@ func main() {
 
 			}
 
-			if err := installService(StoragePath, *installServiceUser, *installServiceGroup, *installUserLevel); err != nil {
+			adminBindAddr := firstNonEmpty(*installAdminBind, os.Getenv("LEGION_AUTH_ADMIN_BIND"), defaultAdminBindAddr)
+			daemonAPIURL := firstNonEmpty(*installDaemonAPIURL, os.Getenv("LEGION_AUTH_API_URL"), os.Getenv("LEGION_API_URL"))
+
+			if err := installService(StoragePath, *installServiceUser, *installServiceGroup, *installUserLevel, adminBindAddr, daemonAPIURL); err != nil {
 
 				printError(fmt.Sprintf("Service installation failed: %v", err))
 
@@ -2243,6 +1967,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	adminBindAddr := firstNonEmpty(*adminBindFlag, os.Getenv("LEGION_AUTH_ADMIN_BIND"), defaultAdminBindAddr)
+	daemonAPIURL := firstNonEmpty(*daemonAPIURLFlag, os.Getenv("LEGION_AUTH_API_URL"), os.Getenv("LEGION_API_URL"))
+
 	// Initialize OpenTelemetry (metrics + traces)
 	otelCfg := pgtel.ConfigFromEnv(Version)
 	var err error
@@ -2263,6 +1990,15 @@ func main() {
 		logger.Warn("failed to register legion metrics", slog.String("error", err.Error()))
 	}
 
+	adminAPI, err := NewAdminAPI(adminBindAddr, daemonAPIURL)
+	if err != nil {
+		printError(fmt.Sprintf("Admin API setup failed: %v", err))
+		os.Exit(1)
+	}
+	if configExists() {
+		adminAPI.StartMonitoring()
+	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -2270,6 +2006,12 @@ func main() {
 		<-sigChan
 		logger.Info("shutdown initiated")
 		close(shutdownChan)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := adminAPI.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("admin api shutdown error", slog.String("error", err.Error()))
+		}
 
 		// Flush all telemetry before exit
 		done := make(chan error, 1)
@@ -2289,15 +2031,38 @@ func main() {
 		os.Exit(0)
 	}()
 
-	runTokenMonitoring()
+	if err := adminAPI.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		printError(fmt.Sprintf("Admin API failed: %v", err))
+		os.Exit(1)
+	}
 }
 
-func installService(storagePath, serviceUser, serviceGroup string, userLevel bool) error {
+func installService(storagePath, serviceUser, serviceGroup string, userLevel bool, adminBindAddr, daemonAPIURL string) error {
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 	exePath, _ = filepath.Abs(exePath)
+
+	if err := validateAdminBindAddr(adminBindAddr); err != nil {
+		return err
+	}
+
+	systemdAdminBindEnv := fmt.Sprintf("Environment=LEGION_AUTH_ADMIN_BIND=%s\n", adminBindAddr)
+	systemdDaemonAPIURLEnv := ""
+	if daemonAPIURL != "" {
+		systemdDaemonAPIURLEnv = fmt.Sprintf("Environment=LEGION_AUTH_API_URL=%s\n", daemonAPIURL)
+	}
+
+	launchdAdminBindEnv := fmt.Sprintf(`        <key>LEGION_AUTH_ADMIN_BIND</key>
+        <string>%s</string>
+`, adminBindAddr)
+	launchdDaemonAPIURLEnv := ""
+	if daemonAPIURL != "" {
+		launchdDaemonAPIURLEnv = fmt.Sprintf(`        <key>LEGION_AUTH_API_URL</key>
+        <string>%s</string>
+`, daemonAPIURL)
+	}
 
 	switch runtime.GOOS {
 	case "linux":
@@ -2318,10 +2083,11 @@ Restart=always
 RestartSec=10
 Environment=PG_OTEL_ENABLED=false
 Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+%s%s
 
 [Install]
 WantedBy=default.target
-`, exePath, storagePath)
+`, exePath, storagePath, systemdAdminBindEnv, systemdDaemonAPIURLEnv)
 
 			home, _ := os.UserHomeDir()
 			servicePath = filepath.Join(home, ".config/systemd/user/legion-auth.service")
@@ -2358,10 +2124,11 @@ User=%s
 Group=%s
 Environment=PG_OTEL_ENABLED=false
 Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+%s%s
 
 [Install]
 WantedBy=multi-user.target
-`, exePath, storagePath, serviceUser, resolvedServiceGroup)
+`, exePath, storagePath, serviceUser, resolvedServiceGroup, systemdAdminBindEnv, systemdDaemonAPIURLEnv)
 
 			servicePath = "/etc/systemd/system/legion-auth.service"
 			systemctlArgs = []string{}
@@ -2450,6 +2217,7 @@ WantedBy=multi-user.target
         <string>false</string>
         <key>OTEL_EXPORTER_OTLP_ENDPOINT</key>
         <string>http://localhost:4318</string>
+%s%s
     </dict>
     <key>StandardOutPath</key>
     <string>%s</string>
@@ -2457,7 +2225,7 @@ WantedBy=multi-user.target
     <string>%s</string>
 </dict>
 </plist>
-`, exePath, storagePath, logPath, errorLogPath)
+`, exePath, storagePath, launchdAdminBindEnv, launchdDaemonAPIURLEnv, logPath, errorLogPath)
 
 		// Ensure directory exists (mostly for user agents)
 		if err := os.MkdirAll(filepath.Dir(plistPath), 0755); err != nil {
@@ -2570,7 +2338,7 @@ func uninstallService(userLevel bool) error {
 	return nil
 }
 
-func runTokenMonitoring() {
+func runTokenMonitoring(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("panic in token monitoring", slog.Any("panic", r), slog.String("stack", string(debug.Stack())))
@@ -2582,16 +2350,9 @@ func runTokenMonitoring() {
 		slog.String("storage_path", StoragePath),
 	)
 
-	if _, err := os.Stat(ConfigFile); os.IsNotExist(err) {
-		printInfo("No configuration found. Running setup...")
-		if err := interactiveSetup(setupOpts{}); err != nil {
-			printError(err.Error())
-			return
-		}
-		// If setup succeeded but config still missing, bail out
-		if _, err := os.Stat(ConfigFile); os.IsNotExist(err) {
-			return
-		}
+	if !configExists() {
+		logger.Info("token monitoring skipped; configuration missing")
+		return
 	}
 
 	// Load config/terminal info and feed metrics (matches edge-monitor's legion_config_loop)
@@ -2607,6 +2368,9 @@ func runTokenMonitoring() {
 
 	for {
 		select {
+		case <-ctx.Done():
+			logger.Info("token monitoring stopped")
+			return
 		case <-shutdownChan:
 			logger.Info("token monitoring stopped")
 			return
