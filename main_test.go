@@ -1053,8 +1053,39 @@ func TestDecodeJSON_RejectsLargeBody(t *testing.T) {
 	}
 }
 
+func TestDecodeJSON_RejectsMultipleTopLevelValues(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/configure", strings.NewReader(`{"username":"a"}{"username":"b"}`))
+	rec := httptest.NewRecorder()
+
+	var payload map[string]string
+	err := decodeJSON(rec, req, &payload)
+	if err == nil || !strings.Contains(err.Error(), "single JSON object") {
+		t.Fatalf("expected single-object validation error, got %v", err)
+	}
+}
+
+func TestWriteSetupError_PreservesForbidden(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeSetupError(rec, &HTTPError{StatusCode: http.StatusForbidden, Body: "forbidden"})
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal body failed: %v", err)
+	}
+	if body["error"] != "upstream_forbidden" {
+		t.Fatalf("error = %q, want %q", body["error"], "upstream_forbidden")
+	}
+}
+
 func TestCurrentTokenStatus(t *testing.T) {
 	saveAndRestoreStorageGlobals(t)
+	origGID := fileGID
+	fileGID = -1
+	defer func() { fileGID = origGID }()
 	dir := t.TempDir()
 	AccessTokenFile = filepath.Join(dir, "access_token.json")
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,13 +17,14 @@ import (
 )
 
 const (
-	defaultAdminBindAddr   = ":8100"
+	defaultAdminBindAddr   = "127.0.0.1:8100"
 	maxJSONBodyBytes       = 1 << 20
 	adminReadHeaderTimeout = 5 * time.Second
 )
 
 type AdminAPI struct {
 	mu            sync.Mutex
+	configureMu   sync.Mutex
 	bindAddr      string
 	server        *http.Server
 	monitorCancel context.CancelFunc
@@ -131,11 +133,11 @@ func (a *AdminAPI) handleConfigure(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !a.mu.TryLock() {
+	if !a.configureMu.TryLock() {
 		writeAPIError(w, http.StatusConflict, "configure_in_progress", "another configure request is already running")
 		return
 	}
-	defer a.mu.Unlock()
+	defer a.configureMu.Unlock()
 
 	apiURL := strings.TrimRight(req.APIURL, "/")
 
@@ -185,15 +187,22 @@ func (a *AdminAPI) handleConfigure(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stopMonitor(a.takeMonitorLocked())
+	a.mu.Lock()
+	cancel, done := a.takeMonitorLocked()
+	a.mu.Unlock()
+	stopMonitor(cancel, done)
 
 	if err := commitConfiguredState(state); err != nil {
+		a.mu.Lock()
 		a.startMonitoringLocked()
+		a.mu.Unlock()
 		writeAPIError(w, http.StatusInternalServerError, "commit_failed", err.Error())
 		return
 	}
 
+	a.mu.Lock()
 	a.startMonitoringLocked()
+	a.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"configured":     true,
@@ -243,8 +252,10 @@ func writeSetupError(w http.ResponseWriter, err error) {
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
 		switch httpErr.StatusCode {
-		case http.StatusUnauthorized, http.StatusForbidden:
+		case http.StatusUnauthorized:
 			writeAPIError(w, http.StatusUnauthorized, "upstream_unauthorized", httpErr.Error())
+		case http.StatusForbidden:
+			writeAPIError(w, http.StatusForbidden, "upstream_forbidden", httpErr.Error())
 		case http.StatusConflict:
 			writeAPIError(w, http.StatusConflict, "upstream_conflict", httpErr.Error())
 		default:
@@ -288,7 +299,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) error {
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
-	if decoder.More() {
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return errors.New("request body must contain a single JSON object")
 	}
 	return nil
