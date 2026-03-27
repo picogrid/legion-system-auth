@@ -93,6 +93,7 @@ jobs:
         GOARCH: ${{ matrix.goarch }}
         GOARM: ${{ matrix.goarm }}
       run: |
+        mkdir -p build
         VERSION="${GITHUB_REF_NAME#v}"
         if [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
           VERSION="dev-$(git rev-parse --short HEAD)"
@@ -102,7 +103,7 @@ jobs:
 
         go build -v \
           -ldflags "-X main.Version=$VERSION -X main.GitCommit=$GIT_COMMIT -X main.BuildDate=$BUILD_DATE" \
-          -o build/${{ matrix.output_name }} main.go
+          -o build/${{ matrix.output_name }} .
 
     - name: Generate SHA256 Checksum
       run: |

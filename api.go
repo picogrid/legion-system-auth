@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	defaultAdminBindAddr = ":8100"
-	maxJSONBodyBytes     = 1 << 20
+	defaultAdminBindAddr   = ":8100"
+	maxJSONBodyBytes       = 1 << 20
+	adminReadHeaderTimeout = 5 * time.Second
 )
 
 type AdminAPI struct {
@@ -58,8 +59,9 @@ func NewAdminAPI(bindAddr string) *AdminAPI {
 	mux.HandleFunc("/api/v1/configure", api.handleConfigure)
 
 	api.server = &http.Server{
-		Addr:    bindAddr,
-		Handler: mux,
+		Addr:              bindAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: adminReadHeaderTimeout,
 	}
 
 	return api
@@ -240,10 +242,10 @@ func defaultManifestFromOpts(opts setupOpts) Manifest {
 func writeSetupError(w http.ResponseWriter, err error) {
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
-		switch {
-		case httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden:
+		switch httpErr.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
 			writeAPIError(w, http.StatusUnauthorized, "upstream_unauthorized", httpErr.Error())
-		case httpErr.StatusCode == http.StatusConflict:
+		case http.StatusConflict:
 			writeAPIError(w, http.StatusConflict, "upstream_conflict", httpErr.Error())
 		default:
 			writeAPIError(w, http.StatusBadGateway, "upstream_error", httpErr.Error())
@@ -301,21 +303,9 @@ func configExists() bool {
 	return fileExists(ConfigFile)
 }
 
-func loadAppConfig() (AppConfig, error) {
-	content, err := os.ReadFile(ConfigFile)
-	if err != nil {
-		return AppConfig{}, err
-	}
-
-	var cfg AppConfig
-	if err := json.Unmarshal(content, &cfg); err != nil {
-		return AppConfig{}, err
-	}
-	return cfg, nil
-}
-
-func loadStoredToken(path string) (StoredToken, error) {
-	content, err := os.ReadFile(path)
+func loadAccessToken() (StoredToken, error) {
+	// #nosec G304 -- AccessTokenFile is initialized from controlled storage path during setupStorage.
+	content, err := os.ReadFile(AccessTokenFile)
 	if err != nil {
 		return StoredToken{}, err
 	}
@@ -328,7 +318,7 @@ func loadStoredToken(path string) (StoredToken, error) {
 }
 
 func currentTokenStatus() (bool, string) {
-	token, err := loadStoredToken(AccessTokenFile)
+	token, err := loadAccessToken()
 	if err != nil || token.ExpiresAt == "" {
 		return false, ""
 	}
