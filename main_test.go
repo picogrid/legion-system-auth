@@ -1014,122 +1014,42 @@ func TestManifest_JSONOmitsEmptyScopes(t *testing.T) {
 // Admin API
 // ============================================================================
 
-func TestValidateAdminBindAddr(t *testing.T) {
-	tests := []struct {
-		name    string
-		addr    string
-		wantErr bool
-	}{
-		{name: "loopback", addr: "127.0.0.1:8100"},
-		{name: "hostname", addr: "ecn.local:8100"},
-		{name: "wildcard ipv4", addr: "0.0.0.0:8100", wantErr: true},
-		{name: "wildcard short", addr: ":8100", wantErr: true},
-		{name: "bad port", addr: "127.0.0.1:99999", wantErr: true},
+func TestValidateConfigureRequest(t *testing.T) {
+	valid := configureRequest{
+		APIURL:   "https://api.example.com",
+		Username: "user",
+		Password: "pass",
+		OrgID:    "org-1",
+	}
+	if err := validateConfigureRequest(valid); err != nil {
+		t.Fatalf("valid request rejected: %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateAdminBindAddr(tt.addr)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("validateAdminBindAddr(%q) error = %v, wantErr=%v", tt.addr, err, tt.wantErr)
-			}
-		})
+	missing := configureRequest{Username: "user", Password: "pass", OrgID: "org-1"}
+	if err := validateConfigureRequest(missing); err == nil {
+		t.Fatal("expected error for missing api_url")
 	}
-}
 
-func TestAdminAPIHandleStatus_Unconfigured(t *testing.T) {
-	saveAndRestoreStorageGlobals(t)
-	dir := t.TempDir()
-	ConfigFile = filepath.Join(dir, "oauth_config.json")
-	AccessTokenFile = filepath.Join(dir, "access_token.json")
-
-	api := &AdminAPI{}
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
-	rec := httptest.NewRecorder()
-
-	api.handleStatus(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
+	withEntity := configureRequest{
+		APIURL:       "https://api.example.com",
+		Username:     "user",
+		Password:     "pass",
+		OrgID:        "org-1",
+		CreateEntity: true,
 	}
-	if strings.TrimSpace(rec.Body.String()) != `{"configured":false}` {
-		t.Fatalf("body = %s", rec.Body.String())
+	if err := validateConfigureRequest(withEntity); err == nil || !strings.Contains(err.Error(), "entity_name") {
+		t.Fatalf("expected entity_name error, got %v", err)
 	}
 }
 
 func TestDecodeJSON_RejectsLargeBody(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/login", strings.NewReader(`{"username":"`+strings.Repeat("a", maxJSONBodyBytes)+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/configure", strings.NewReader(`{"username":"`+strings.Repeat("a", maxJSONBodyBytes)+`"}`))
 	rec := httptest.NewRecorder()
 
 	var payload map[string]string
 	err := decodeJSON(rec, req, &payload)
 	if err == nil {
 		t.Fatal("expected request body to be rejected")
-	}
-}
-
-func TestLoginRateLimiter_PrunesStaleEntries(t *testing.T) {
-	now := time.Now()
-	limiter := newLoginRateLimiter(5, time.Minute)
-	limiter.now = func() time.Time { return now }
-	limiter.entries["127.0.0.1"] = []time.Time{now.Add(-2 * time.Minute)}
-
-	if !limiter.allow("127.0.0.1") {
-		t.Fatal("expected stale entry to be pruned and request allowed")
-	}
-	if len(limiter.entries["127.0.0.1"]) != 1 {
-		t.Fatalf("expected one fresh hit, got %d", len(limiter.entries["127.0.0.1"]))
-	}
-}
-
-func TestAdminAPIHandleLogout_RemovesStateFiles(t *testing.T) {
-	saveAndRestoreStorageGlobals(t)
-	dir := t.TempDir()
-	ConfigFile = filepath.Join(dir, "oauth_config.json")
-	AccessTokenFile = filepath.Join(dir, "access_token.json")
-	RefreshTokenFile = filepath.Join(dir, "refresh_token.json")
-	TerminalEntityFile = filepath.Join(dir, "terminal_entity.json")
-
-	writeFile(t, ConfigFile, []byte(`{}`))
-	writeFile(t, AccessTokenFile, []byte(`{}`))
-	writeFile(t, RefreshTokenFile, []byte(`{}`))
-	writeFile(t, TerminalEntityFile, []byte(`{}`))
-
-	api := &AdminAPI{}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/logout", nil)
-	rec := httptest.NewRecorder()
-
-	api.handleLogout(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
-	}
-	for _, path := range []string{ConfigFile, AccessTokenFile, RefreshTokenFile, TerminalEntityFile} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("expected %s to be removed", path)
-		}
-	}
-}
-
-func TestValidateLoginRequest_AllowsDiscoveryWithoutOrgID(t *testing.T) {
-	if err := validateLoginRequest(setupOpts{}); err != nil {
-		t.Fatalf("validateLoginRequest returned error: %v", err)
-	}
-}
-
-func TestValidateLoginRequest_RequiresEntityFieldsWhenCreateEntity(t *testing.T) {
-	opts := setupOpts{
-		CreateEntity:   true,
-		NonInteractive: true,
-	}
-
-	if err := validateLoginRequest(opts); err == nil || !strings.Contains(err.Error(), "entity_name") {
-		t.Fatalf("expected entity_name validation error, got %v", err)
-	}
-
-	opts.EntityName = "SN-123"
-	if err := validateLoginRequest(opts); err == nil || !strings.Contains(err.Error(), "entity_type") {
-		t.Fatalf("expected entity_type validation error, got %v", err)
 	}
 }
 

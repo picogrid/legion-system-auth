@@ -2,17 +2,10 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/big"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,25 +16,20 @@ import (
 )
 
 const (
-	defaultAdminBindAddr = "127.0.0.1:8100"
-	adminTLSCertFileName = "admin_api.crt"
-	adminTLSKeyFileName  = "admin_api.key"
+	defaultAdminBindAddr = ":8100"
 	maxJSONBodyBytes     = 1 << 20
 )
 
 type AdminAPI struct {
 	mu            sync.Mutex
 	bindAddr      string
-	legionAPIURL  string
-	certPath      string
-	keyPath       string
 	server        *http.Server
 	monitorCancel context.CancelFunc
 	monitorDone   chan struct{}
-	loginLimiter  *loginRateLimiter
 }
 
-type loginRequest struct {
+type configureRequest struct {
+	APIURL          string `json:"api_url"`
 	Username        string `json:"username"`
 	Password        string `json:"password"`
 	OrgID           string `json:"org_id"`
@@ -59,87 +47,27 @@ type configuredState struct {
 	TerminalEntity map[string]interface{}
 }
 
-type loginRateLimiter struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	limit   int
-	window  time.Duration
-	entries map[string][]time.Time
-}
-
-func newLoginRateLimiter(limit int, window time.Duration) *loginRateLimiter {
-	return &loginRateLimiter{
-		now:     time.Now,
-		limit:   limit,
-		window:  window,
-		entries: make(map[string][]time.Time),
-	}
-}
-
-func (l *loginRateLimiter) allow(key string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	now := l.now()
-	cutoff := now.Add(-l.window)
-	times := l.entries[key][:0]
-	for _, ts := range l.entries[key] {
-		if ts.After(cutoff) {
-			times = append(times, ts)
-		}
-	}
-	if len(times) == 0 {
-		delete(l.entries, key)
-	} else {
-		l.entries[key] = times
-	}
-	if len(times) >= l.limit {
-		return false
-	}
-	l.entries[key] = append(times, now)
-	return true
-}
-
-func NewAdminAPI(bindAddr, legionAPIURL string) (*AdminAPI, error) {
+func NewAdminAPI(bindAddr string) *AdminAPI {
 	if bindAddr == "" {
 		bindAddr = defaultAdminBindAddr
 	}
-	if err := validateAdminBindAddr(bindAddr); err != nil {
-		return nil, err
-	}
 
-	certPath, keyPath, err := ensureAdminTLSFiles(bindAddr)
-	if err != nil {
-		return nil, err
-	}
-
-	api := &AdminAPI{
-		bindAddr:     bindAddr,
-		legionAPIURL: strings.TrimRight(legionAPIURL, "/"),
-		certPath:     certPath,
-		keyPath:      keyPath,
-		loginLimiter: newLoginRateLimiter(5, time.Minute),
-	}
+	api := &AdminAPI{bindAddr: bindAddr}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/status", api.handleStatus)
-	mux.HandleFunc("/api/v1/login", api.handleLogin)
-	mux.HandleFunc("/api/v1/logout", api.handleLogout)
+	mux.HandleFunc("/api/v1/configure", api.handleConfigure)
 
 	api.server = &http.Server{
 		Addr:    bindAddr,
 		Handler: mux,
 	}
 
-	return api, nil
+	return api
 }
 
 func (a *AdminAPI) ListenAndServe() error {
-	logger.Info("admin api listening",
-		slog.String("bind_addr", a.bindAddr),
-		slog.String("cert_path", a.certPath),
-	)
-	return a.server.ListenAndServeTLS(a.certPath, a.keyPath)
+	logger.Info("admin api listening", slog.String("bind_addr", a.bindAddr))
+	return a.server.ListenAndServe()
 }
 
 func (a *AdminAPI) StartMonitoring() {
@@ -185,68 +113,29 @@ func (a *AdminAPI) takeMonitorLocked() (context.CancelFunc, chan struct{}) {
 	return cancel, done
 }
 
-func (a *AdminAPI) currentLegionAPIURL() string {
-	if cfg, err := loadAppConfig(); err == nil && cfg.LegionBaseURL != "" {
-		return strings.TrimRight(cfg.LegionBaseURL, "/")
-	}
-	return a.legionAPIURL
-}
-
-func (a *AdminAPI) handleStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-		return
-	}
-
-	if !configExists() {
-		writeJSON(w, http.StatusOK, map[string]bool{"configured": false})
-		return
-	}
-
-	if _, err := loadAppConfig(); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "invalid_config", err.Error())
-		return
-	}
-
-	tokenValid, tokenExpiresAt := currentTokenStatus()
-	resp := map[string]interface{}{
-		"configured":       true,
-		"token_valid":      tokenValid,
-		"token_expires_at": tokenExpiresAt,
-	}
-	if tokenExpiresAt == "" {
-		delete(resp, "token_expires_at")
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (a *AdminAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
+func (a *AdminAPI) handleConfigure(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-
-	apiURL := a.currentLegionAPIURL()
-	if apiURL == "" {
-		writeAPIError(w, http.StatusServiceUnavailable, "legion_api_url_not_configured", "daemon legion api url is not configured")
-		return
-	}
-
-	clientIP := remoteIP(r.RemoteAddr)
-	if !a.loginLimiter.allow(clientIP) {
-		writeAPIError(w, http.StatusTooManyRequests, "rate_limited", "too many login attempts")
-		return
-	}
-
-	var req loginRequest
+	var req configureRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeAPIError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
-	if req.Username == "" || req.Password == "" {
-		writeAPIError(w, http.StatusUnprocessableEntity, "invalid_request", "username and password are required")
+
+	if err := validateConfigureRequest(req); err != nil {
+		writeAPIError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
+
+	if !a.mu.TryLock() {
+		writeAPIError(w, http.StatusConflict, "configure_in_progress", "another configure request is already running")
+		return
+	}
+	defer a.mu.Unlock()
+
+	apiURL := strings.TrimRight(req.APIURL, "/")
 
 	oauthCfg, err := fetchWellKnownConfig(apiURL)
 	if err != nil {
@@ -271,8 +160,9 @@ func (a *AdminAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.OrgID == "" {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"orgs": orgs})
+	org, ok := findOrgByID(orgs, req.OrgID)
+	if !ok {
+		writeAPIError(w, http.StatusForbidden, "org_access_denied", fmt.Sprintf("user cannot access organization %q", req.OrgID))
 		return
 	}
 
@@ -284,26 +174,10 @@ func (a *AdminAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 		CreateEntity:    req.CreateEntity,
 		NonInteractive:  true,
 	}
-	if err := validateLoginRequest(opts); err != nil {
-		writeAPIError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
-	}
 
-	org, ok := findOrgByID(orgs, req.OrgID)
-	if !ok {
-		writeAPIError(w, http.StatusForbidden, "org_access_denied", fmt.Sprintf("user cannot access organization %q", req.OrgID))
-		return
-	}
+	manifest := defaultManifestFromOpts(opts)
 
-	// Hold the lock across the full login+configure flow so callers see at most one
-	// in-flight configuration operation, including OAuth, entity creation, and monitor restarts.
-	if !a.mu.TryLock() {
-		writeAPIError(w, http.StatusConflict, "login_in_progress", "another login request is already configuring the device")
-		return
-	}
-	defer a.mu.Unlock()
-
-	state, err := prepareConfiguredState(apiURL, userToken, org, defaultManifestFromOpts(opts), opts, false)
+	state, err := prepareConfiguredState(apiURL, userToken, org, manifest, opts, false)
 	if err != nil {
 		writeSetupError(w, err)
 		return
@@ -320,56 +194,47 @@ func (a *AdminAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 	a.startMonitoringLocked()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":        true,
+		"configured":     true,
 		"org_id":         state.Config.OrganizationID,
 		"integration_id": state.Config.IntegrationID,
 	})
 }
 
-func (a *AdminAPI) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-		return
-	}
-
-	if !a.mu.TryLock() {
-		writeAPIError(w, http.StatusConflict, "logout_in_progress", "another request is updating device auth state")
-		return
-	}
-	defer a.mu.Unlock()
-
-	stopMonitor(a.takeMonitorLocked())
-
-	if err := clearConfiguredState(); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "logout_failed", err.Error())
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
-}
-
-func validateLoginRequest(opts setupOpts) error {
-	if err := validateSetupOptionValues(opts); err != nil {
-		return err
-	}
-	if !opts.CreateEntity {
-		return nil
-	}
-	if opts.EntityName == "" {
+func validateConfigureRequest(req configureRequest) error {
+	switch {
+	case req.APIURL == "":
+		return errors.New("api_url is required")
+	case req.Username == "" || req.Password == "":
+		return errors.New("username and password are required")
+	case req.OrgID == "":
+		return errors.New("org_id is required")
+	case req.CreateEntity && req.EntityName == "":
 		return errors.New("entity_name is required when create_entity is true")
-	}
-	if opts.EntityType == "" {
+	case req.CreateEntity && req.EntityType == "":
 		return errors.New("entity_type is required when create_entity is true")
 	}
-	return nil
+	opts := setupOpts{AccessLevel: req.AccessLevel, EntityType: req.EntityType}
+	return validateSetupOptionValues(opts)
 }
 
-func stopMonitor(cancel context.CancelFunc, done chan struct{}) {
-	if cancel == nil {
-		return
+func defaultManifestFromOpts(opts setupOpts) Manifest {
+	relation := firstNonEmpty(opts.AccessLevel, "operator")
+	switch relation {
+	case "viewer", "operator", "admin":
+	default:
+		relation = "operator"
 	}
-	cancel()
-	<-done
+	redirect := firstNonEmpty(opts.RedirectURL, "http://localhost:8000/oauth_callback")
+	redirect = ensureRedirectUriAvailable(redirect)
+	return Manifest{
+		Name:        firstNonEmpty(opts.IntegrationName, "Portal Integration"),
+		Version:     firstNonEmpty(opts.Version, "1.0.0"),
+		Description: firstNonEmpty(opts.Description, "OAuth integration for portal authentication"),
+		OAuthConfig: ManifestOAuthConfig{
+			Permissions:  getPermissionsForRelation(relation),
+			RedirectURLs: []string{redirect},
+		},
+	}
 }
 
 func writeSetupError(w http.ResponseWriter, err error) {
@@ -385,8 +250,15 @@ func writeSetupError(w http.ResponseWriter, err error) {
 		}
 		return
 	}
-
 	writeAPIError(w, http.StatusInternalServerError, "configure_failed", err.Error())
+}
+
+func stopMonitor(cancel context.CancelFunc, done chan struct{}) {
+	if cancel == nil {
+		return
+	}
+	cancel()
+	<-done
 }
 
 func writeAPIError(w http.ResponseWriter, status int, code, detail string) {
@@ -420,122 +292,6 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) error {
 	return nil
 }
 
-func remoteIP(remoteAddr string) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil || host == "" {
-		return remoteAddr
-	}
-	return host
-}
-
-func validateAdminBindAddr(addr string) error {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return fmt.Errorf("invalid admin bind address %q: %w", addr, err)
-	}
-	if host == "" {
-		return errors.New("admin bind address must include a specific host")
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
-		return errors.New("admin bind address must not use a wildcard host")
-	}
-	if strings.EqualFold(host, "0.0.0.0") || host == "::" {
-		return errors.New("admin bind address must not use a wildcard host")
-	}
-	value, err := strconv.Atoi(port)
-	if err != nil || value < 1 || value > 65535 {
-		return fmt.Errorf("invalid admin bind port %q", port)
-	}
-	return nil
-}
-
-func ensureAdminTLSFiles(bindAddr string) (string, string, error) {
-	certPath := filepath.Join(StoragePath, adminTLSCertFileName)
-	keyPath := filepath.Join(StoragePath, adminTLSKeyFileName)
-	if fileExists(certPath) && fileExists(keyPath) {
-		return certPath, keyPath, nil
-	}
-
-	host, _, err := net.SplitHostPort(bindAddr)
-	if err != nil {
-		return "", "", err
-	}
-
-	certPEM, keyPEM, err := generateSelfSignedCert(host)
-	if err != nil {
-		return "", "", err
-	}
-	if err := writeFileWithPermissions(certPath, certPEM, 0640); err != nil {
-		return "", "", err
-	}
-	if err := writeFileWithPermissions(keyPath, keyPEM, 0600); err != nil {
-		return "", "", err
-	}
-	return certPath, keyPath, nil
-}
-
-func generateSelfSignedCert(host string) ([]byte, []byte, error) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	serialNumber, err := rand.Int(rand.Reader, serialLimit)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	notBefore := time.Now().Add(-time.Hour)
-	notAfter := notBefore.Add(5 * 365 * 24 * time.Hour)
-
-	template := &x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			CommonName: host,
-		},
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-
-	if ip := net.ParseIP(host); ip != nil {
-		template.IPAddresses = append(template.IPAddresses, ip)
-	} else {
-		template.DNSNames = append(template.DNSNames, host)
-	}
-	if host != "localhost" {
-		template.DNSNames = append(template.DNSNames, "localhost")
-		template.IPAddresses = append(template.IPAddresses, net.ParseIP("127.0.0.1"))
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
-	return certPEM, keyPEM, nil
-}
-
-func writeFileWithPermissions(path string, data []byte, mode os.FileMode) error {
-	if err := os.WriteFile(path, data, mode); err != nil {
-		return fmt.Errorf("failed to write file %s: %w", path, err)
-	}
-	if err := os.Chmod(path, mode); err != nil {
-		return fmt.Errorf("failed to set file permissions for %s: %w", path, err)
-	}
-	if fileGID >= 0 {
-		if err := os.Chown(path, -1, fileGID); err != nil {
-			return fmt.Errorf("failed to set group ownership on %s: %w", path, err)
-		}
-	}
-	return nil
-}
-
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -543,16 +299,6 @@ func fileExists(path string) bool {
 
 func configExists() bool {
 	return fileExists(ConfigFile)
-}
-
-func clearConfiguredState() error {
-	paths := []string{ConfigFile, AccessTokenFile, RefreshTokenFile, TerminalEntityFile}
-	for _, path := range paths {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
 }
 
 func loadAppConfig() (AppConfig, error) {
@@ -592,46 +338,6 @@ func currentTokenStatus() (bool, string) {
 		return false, ""
 	}
 	return time.Until(expiresAt) > 0, expiresAt.Format(time.RFC3339)
-}
-
-func defaultManifestFromOpts(opts setupOpts) Manifest {
-	name := opts.IntegrationName
-	if name == "" {
-		name = "Portal Integration"
-	}
-
-	description := opts.Description
-	if description == "" {
-		description = "OAuth integration for portal authentication"
-	}
-
-	version := opts.Version
-	if version == "" {
-		version = "1.0.0"
-	}
-
-	redirectURL := opts.RedirectURL
-	if redirectURL == "" {
-		redirectURL = "http://localhost:8000/oauth_callback"
-	}
-	redirectURL = ensureRedirectUriAvailable(redirectURL)
-
-	relation := firstNonEmpty(opts.AccessLevel, "operator")
-	switch relation {
-	case "viewer", "operator", "admin":
-	default:
-		relation = "operator"
-	}
-
-	return Manifest{
-		Name:        name,
-		Version:     version,
-		Description: description,
-		OAuthConfig: ManifestOAuthConfig{
-			Permissions:  getPermissionsForRelation(relation),
-			RedirectURLs: []string{redirectURL},
-		},
-	}
 }
 
 func prepareConfiguredState(apiURL, userToken string, org Organization, manifest Manifest, opts setupOpts, verbose bool) (configuredState, error) {
@@ -848,6 +554,7 @@ func resolveOrCreateTerminalEntity(apiURL, orgID, integID, token string, opts se
 
 func commitConfiguredState(state configuredState) (err error) {
 	type commitFile struct {
+		data    any
 		path    string
 		temp    string
 		remove  bool
@@ -856,10 +563,10 @@ func commitConfiguredState(state configuredState) (err error) {
 	}
 
 	files := []commitFile{
-		{path: ConfigFile},
-		{path: AccessTokenFile},
-		{path: RefreshTokenFile, remove: state.RefreshToken == nil},
-		{path: TerminalEntityFile, remove: state.TerminalEntity == nil},
+		{path: ConfigFile, data: state.Config},
+		{path: AccessTokenFile, data: state.AccessToken},
+		{path: RefreshTokenFile, data: state.RefreshToken, remove: state.RefreshToken == nil},
+		{path: TerminalEntityFile, data: state.TerminalEntity, remove: state.TerminalEntity == nil},
 	}
 
 	rollback := func() {
@@ -890,19 +597,11 @@ func commitConfiguredState(state configuredState) (err error) {
 		}
 	}()
 
-	if files[0].temp, err = writeTempJSONFile(ConfigFile, state.Config); err != nil {
-		return err
-	}
-	if files[1].temp, err = writeTempJSONFile(AccessTokenFile, state.AccessToken); err != nil {
-		return err
-	}
-	if state.RefreshToken != nil {
-		if files[2].temp, err = writeTempJSONFile(RefreshTokenFile, *state.RefreshToken); err != nil {
-			return err
+	for i := range files {
+		if files[i].remove {
+			continue
 		}
-	}
-	if state.TerminalEntity != nil {
-		if files[3].temp, err = writeTempJSONFile(TerminalEntityFile, state.TerminalEntity); err != nil {
+		if files[i].temp, err = writeTempJSONFile(files[i].path, files[i].data); err != nil {
 			return err
 		}
 	}

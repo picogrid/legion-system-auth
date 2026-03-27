@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -130,7 +131,7 @@ type StoredToken struct {
 type Organization struct {
 	OrganizationID   string `json:"organization_id"`
 	OrganizationName string `json:"organization_name"`
-	UserRole         string `json:"user_role"`
+	OrganizationRole string `json:"organization_role"`
 }
 
 type Integration struct {
@@ -703,17 +704,8 @@ func getWellKnownConfig(legionAPIURL string, nonInteractive bool) OAuthConfig {
 }
 
 func validateSetupOptionValues(opts setupOpts) error {
-	if opts.EntityType != "" {
-		valid := false
-		for _, t := range validEntityTypes {
-			if t == opts.EntityType {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			return fmt.Errorf("unknown entity type %q, must be one of: %s", opts.EntityType, strings.Join(validEntityTypes, ", "))
-		}
+	if opts.EntityType != "" && !slices.Contains(validEntityTypes, opts.EntityType) {
+		return fmt.Errorf("unknown entity type %q, must be one of: %s", opts.EntityType, strings.Join(validEntityTypes, ", "))
 	}
 
 	if opts.AccessLevel != "" {
@@ -1825,15 +1817,13 @@ func main() {
 	installServiceUser := installCmd.String("service-user", "", "User to run the service as (Linux system-level only)")
 	installServiceGroup := installCmd.String("service-group", "", "Group to run the service as (Linux system-level only, default: primary group of service user)")
 	installUserLevel := installCmd.Bool("user", false, "Install as user-level service (no sudo required)")
-	installAdminBind := installCmd.String("admin-bind", "", "HTTPS admin API bind address for daemon mode (host:port)")
-	installDaemonAPIURL := installCmd.String("api-url", "", "Legion API URL for unconfigured daemon mode")
+	installAdminBind := installCmd.String("admin-bind", "", "Admin API bind address for daemon mode (host:port)")
 
 	uninstallCmd := flag.NewFlagSet("uninstall-service", flag.ExitOnError)
 	uninstallUserLevel := uninstallCmd.Bool("user", false, "Uninstall user-level service")
 
 	storagePathFlag := flag.String("storage-path", "", "Custom storage path")
-	adminBindFlag := flag.String("admin-bind", "", "HTTPS admin API bind address for daemon mode (host:port)")
-	daemonAPIURLFlag := flag.String("api-url", "", "Legion API URL for unconfigured daemon mode")
+	adminBindFlag := flag.String("admin-bind", "", "Admin API bind address for daemon mode (host:port)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [command] [options]\n\n", os.Args[0])
@@ -1865,7 +1855,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "          --service-user   User to run service as (Linux system-level only, default: pg if exists, else root)")
 		fmt.Fprintln(os.Stderr, "          --service-group  Group to run service as (Linux system-level only, default: primary group of service user)")
 		fmt.Fprintln(os.Stderr, "          --admin-bind     HTTPS admin API bind address for daemon mode")
-		fmt.Fprintln(os.Stderr, "          --api-url        Legion API URL for unconfigured daemon mode")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  uninstall-service")
 		fmt.Fprintln(os.Stderr, "        Uninstall the service (systemd/Launchd)")
@@ -1932,9 +1921,8 @@ func main() {
 			}
 
 			adminBindAddr := firstNonEmpty(*installAdminBind, os.Getenv("LEGION_AUTH_ADMIN_BIND"), defaultAdminBindAddr)
-			daemonAPIURL := firstNonEmpty(*installDaemonAPIURL, os.Getenv("LEGION_AUTH_API_URL"), os.Getenv("LEGION_API_URL"))
 
-			if err := installService(StoragePath, *installServiceUser, *installServiceGroup, *installUserLevel, adminBindAddr, daemonAPIURL); err != nil {
+			if err := installService(StoragePath, *installServiceUser, *installServiceGroup, *installUserLevel, adminBindAddr); err != nil {
 
 				printError(fmt.Sprintf("Service installation failed: %v", err))
 
@@ -1968,7 +1956,6 @@ func main() {
 	}
 
 	adminBindAddr := firstNonEmpty(*adminBindFlag, os.Getenv("LEGION_AUTH_ADMIN_BIND"), defaultAdminBindAddr)
-	daemonAPIURL := firstNonEmpty(*daemonAPIURLFlag, os.Getenv("LEGION_AUTH_API_URL"), os.Getenv("LEGION_API_URL"))
 
 	// Initialize OpenTelemetry (metrics + traces)
 	otelCfg := pgtel.ConfigFromEnv(Version)
@@ -1990,11 +1977,7 @@ func main() {
 		logger.Warn("failed to register legion metrics", slog.String("error", err.Error()))
 	}
 
-	adminAPI, err := NewAdminAPI(adminBindAddr, daemonAPIURL)
-	if err != nil {
-		printError(fmt.Sprintf("Admin API setup failed: %v", err))
-		os.Exit(1)
-	}
+	adminAPI := NewAdminAPI(adminBindAddr)
 	if configExists() {
 		adminAPI.StartMonitoring()
 	}
@@ -2037,32 +2020,22 @@ func main() {
 	}
 }
 
-func installService(storagePath, serviceUser, serviceGroup string, userLevel bool, adminBindAddr, daemonAPIURL string) error {
+func installService(storagePath, serviceUser, serviceGroup string, userLevel bool, adminBindAddr string) error {
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 	exePath, _ = filepath.Abs(exePath)
 
-	if err := validateAdminBindAddr(adminBindAddr); err != nil {
-		return err
+	if _, _, err := net.SplitHostPort(adminBindAddr); err != nil {
+		return fmt.Errorf("invalid admin bind address %q: %w", adminBindAddr, err)
 	}
 
 	systemdAdminBindEnv := fmt.Sprintf("Environment=LEGION_AUTH_ADMIN_BIND=%s\n", adminBindAddr)
-	systemdDaemonAPIURLEnv := ""
-	if daemonAPIURL != "" {
-		systemdDaemonAPIURLEnv = fmt.Sprintf("Environment=LEGION_AUTH_API_URL=%s\n", daemonAPIURL)
-	}
 
 	launchdAdminBindEnv := fmt.Sprintf(`        <key>LEGION_AUTH_ADMIN_BIND</key>
         <string>%s</string>
 `, adminBindAddr)
-	launchdDaemonAPIURLEnv := ""
-	if daemonAPIURL != "" {
-		launchdDaemonAPIURLEnv = fmt.Sprintf(`        <key>LEGION_AUTH_API_URL</key>
-        <string>%s</string>
-`, daemonAPIURL)
-	}
 
 	switch runtime.GOOS {
 	case "linux":
@@ -2083,11 +2056,10 @@ Restart=always
 RestartSec=10
 Environment=PG_OTEL_ENABLED=false
 Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-%s%s
-
+%s
 [Install]
 WantedBy=default.target
-`, exePath, storagePath, systemdAdminBindEnv, systemdDaemonAPIURLEnv)
+`, exePath, storagePath, systemdAdminBindEnv)
 
 			home, _ := os.UserHomeDir()
 			servicePath = filepath.Join(home, ".config/systemd/user/legion-auth.service")
@@ -2124,11 +2096,10 @@ User=%s
 Group=%s
 Environment=PG_OTEL_ENABLED=false
 Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-%s%s
-
+%s
 [Install]
 WantedBy=multi-user.target
-`, exePath, storagePath, serviceUser, resolvedServiceGroup, systemdAdminBindEnv, systemdDaemonAPIURLEnv)
+`, exePath, storagePath, serviceUser, resolvedServiceGroup, systemdAdminBindEnv)
 
 			servicePath = "/etc/systemd/system/legion-auth.service"
 			systemctlArgs = []string{}
@@ -2217,15 +2188,14 @@ WantedBy=multi-user.target
         <string>false</string>
         <key>OTEL_EXPORTER_OTLP_ENDPOINT</key>
         <string>http://localhost:4318</string>
-%s%s
-    </dict>
+%s    </dict>
     <key>StandardOutPath</key>
     <string>%s</string>
     <key>StandardErrorPath</key>
     <string>%s</string>
 </dict>
 </plist>
-`, exePath, storagePath, launchdAdminBindEnv, launchdDaemonAPIURLEnv, logPath, errorLogPath)
+`, exePath, storagePath, launchdAdminBindEnv, logPath, errorLogPath)
 
 		// Ensure directory exists (mostly for user agents)
 		if err := os.MkdirAll(filepath.Dir(plistPath), 0755); err != nil {
