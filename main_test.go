@@ -1014,36 +1014,36 @@ func TestManifest_JSONOmitsEmptyScopes(t *testing.T) {
 // Admin API
 // ============================================================================
 
-func TestValidateConfigureRequest(t *testing.T) {
-	valid := configureRequest{
+func TestValidateProvisionRequest(t *testing.T) {
+	valid := provisionRequest{
 		APIURL:   "https://api.example.com",
 		Username: "user",
 		Password: "pass",
 		OrgID:    "org-1",
 	}
-	if err := validateConfigureRequest(valid); err != nil {
+	if err := validateProvisionRequest(valid); err != nil {
 		t.Fatalf("valid request rejected: %v", err)
 	}
 
-	missing := configureRequest{Username: "user", Password: "pass", OrgID: "org-1"}
-	if err := validateConfigureRequest(missing); err == nil {
+	missing := provisionRequest{Username: "user", Password: "pass", OrgID: "org-1"}
+	if err := validateProvisionRequest(missing); err == nil {
 		t.Fatal("expected error for missing api_url")
 	}
 
-	withEntity := configureRequest{
+	withEntity := provisionRequest{
 		APIURL:       "https://api.example.com",
 		Username:     "user",
 		Password:     "pass",
 		OrgID:        "org-1",
 		CreateEntity: true,
 	}
-	if err := validateConfigureRequest(withEntity); err == nil || !strings.Contains(err.Error(), "entity_name") {
+	if err := validateProvisionRequest(withEntity); err == nil || !strings.Contains(err.Error(), "entity_name") {
 		t.Fatalf("expected entity_name error, got %v", err)
 	}
 }
 
 func TestDecodeJSON_RejectsLargeBody(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/configure", strings.NewReader(`{"username":"`+strings.Repeat("a", maxJSONBodyBytes)+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/provision", strings.NewReader(`{"username":"`+strings.Repeat("a", maxJSONBodyBytes)+`"}`))
 	rec := httptest.NewRecorder()
 
 	var payload map[string]string
@@ -1054,7 +1054,7 @@ func TestDecodeJSON_RejectsLargeBody(t *testing.T) {
 }
 
 func TestDecodeJSON_RejectsMultipleTopLevelValues(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/configure", strings.NewReader(`{"username":"a"}{"username":"b"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/provision", strings.NewReader(`{"username":"a"}{"username":"b"}`))
 	rec := httptest.NewRecorder()
 
 	var payload map[string]string

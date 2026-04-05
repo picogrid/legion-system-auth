@@ -1567,11 +1567,11 @@ func interactiveSetup(opts setupOpts) error {
 		org = selectOrganization(orgs)
 	}
 
-	state, err := prepareConfiguredState(apiURL, token, org, createManifestInteractively(opts), opts, true)
+	state, err := prepareProvisionedState(apiURL, token, org, createManifestInteractively(opts), opts, true)
 	if err != nil {
 		return err
 	}
-	return commitConfiguredState(state)
+	return commitProvisionedState(state)
 }
 
 var errEntityNotFound = errors.New("entity not found")

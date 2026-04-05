@@ -24,14 +24,14 @@ const (
 
 type AdminAPI struct {
 	mu            sync.Mutex
-	configureMu   sync.Mutex
+	provisionMu   sync.Mutex
 	bindAddr      string
 	server        *http.Server
 	monitorCancel context.CancelFunc
 	monitorDone   chan struct{}
 }
 
-type configureRequest struct {
+type provisionRequest struct {
 	APIURL          string `json:"api_url"`
 	Username        string `json:"username"`
 	Password        string `json:"password"`
@@ -43,7 +43,7 @@ type configureRequest struct {
 	EntityType      string `json:"entity_type"`
 }
 
-type configuredState struct {
+type provisionedState struct {
 	Config         AppConfig
 	AccessToken    StoredToken
 	RefreshToken   *StoredToken
@@ -58,7 +58,7 @@ func NewAdminAPI(bindAddr string) *AdminAPI {
 	api := &AdminAPI{bindAddr: bindAddr}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/configure", api.handleConfigure)
+	mux.HandleFunc("/api/v1/provision", api.handleProvision)
 
 	api.server = &http.Server{
 		Addr:              bindAddr,
@@ -117,27 +117,27 @@ func (a *AdminAPI) takeMonitorLocked() (context.CancelFunc, chan struct{}) {
 	return cancel, done
 }
 
-func (a *AdminAPI) handleConfigure(w http.ResponseWriter, r *http.Request) {
+func (a *AdminAPI) handleProvision(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
-	var req configureRequest
+	var req provisionRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeAPIError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
 
-	if err := validateConfigureRequest(req); err != nil {
+	if err := validateProvisionRequest(req); err != nil {
 		writeAPIError(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
 
-	if !a.configureMu.TryLock() {
-		writeAPIError(w, http.StatusConflict, "configure_in_progress", "another configure request is already running")
+	if !a.provisionMu.TryLock() {
+		writeAPIError(w, http.StatusConflict, "provision_in_progress", "another provision request is already running")
 		return
 	}
-	defer a.configureMu.Unlock()
+	defer a.provisionMu.Unlock()
 
 	apiURL := strings.TrimRight(req.APIURL, "/")
 
@@ -181,7 +181,7 @@ func (a *AdminAPI) handleConfigure(w http.ResponseWriter, r *http.Request) {
 
 	manifest := defaultManifestFromOpts(opts)
 
-	state, err := prepareConfiguredState(apiURL, userToken, org, manifest, opts, false)
+	state, err := prepareProvisionedState(apiURL, userToken, org, manifest, opts, false)
 	if err != nil {
 		writeSetupError(w, err)
 		return
@@ -192,7 +192,7 @@ func (a *AdminAPI) handleConfigure(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 	stopMonitor(cancel, done)
 
-	if err := commitConfiguredState(state); err != nil {
+	if err := commitProvisionedState(state); err != nil {
 		a.mu.Lock()
 		a.startMonitoringLocked()
 		a.mu.Unlock()
@@ -205,13 +205,13 @@ func (a *AdminAPI) handleConfigure(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"configured":     true,
+		"provisioned":     true,
 		"org_id":         state.Config.OrganizationID,
 		"integration_id": state.Config.IntegrationID,
 	})
 }
 
-func validateConfigureRequest(req configureRequest) error {
+func validateProvisionRequest(req provisionRequest) error {
 	switch {
 	case req.APIURL == "":
 		return errors.New("api_url is required")
@@ -263,7 +263,7 @@ func writeSetupError(w http.ResponseWriter, err error) {
 		}
 		return
 	}
-	writeAPIError(w, http.StatusInternalServerError, "configure_failed", err.Error())
+	writeAPIError(w, http.StatusInternalServerError, "provision_failed", err.Error())
 }
 
 func stopMonitor(cancel context.CancelFunc, done chan struct{}) {
@@ -341,7 +341,7 @@ func currentTokenStatus() (bool, string) {
 	return time.Until(expiresAt) > 0, expiresAt.Format(time.RFC3339)
 }
 
-func prepareConfiguredState(apiURL, userToken string, org Organization, manifest Manifest, opts setupOpts, verbose bool) (configuredState, error) {
+func prepareProvisionedState(apiURL, userToken string, org Organization, manifest Manifest, opts setupOpts, verbose bool) (provisionedState, error) {
 	if verbose {
 		printInfo("\nCreating integration...")
 	}
@@ -357,12 +357,12 @@ func prepareConfiguredState(apiURL, userToken string, org Organization, manifest
 				integ = findIntegrationByName(apiURL, userToken, org.OrganizationID, manifest.Name)
 			}
 		} else {
-			return configuredState{}, fmt.Errorf("failed to create integration: %w", err)
+			return provisionedState{}, fmt.Errorf("failed to create integration: %w", err)
 		}
 	}
 
 	if integ == nil {
-		return configuredState{}, errors.New("no integration selected")
+		return provisionedState{}, errors.New("no integration selected")
 	}
 
 	clientID := ""
@@ -388,13 +388,13 @@ func prepareConfiguredState(apiURL, userToken string, org Organization, manifest
 	}
 
 	if clientID == "" {
-		return configuredState{}, errors.New("integration oauth client_id is missing")
+		return provisionedState{}, errors.New("integration oauth client_id is missing")
 	}
 
 	if clientSecret == "" || clientSecret == "[REDACTED]" {
 		clientSecret, err = regenerateClientSecret(apiURL, userToken, org.OrganizationID, integ.ID)
 		if err != nil {
-			return configuredState{}, fmt.Errorf("failed to regenerate client secret: %w", err)
+			return provisionedState{}, fmt.Errorf("failed to regenerate client secret: %w", err)
 		}
 	}
 
@@ -416,11 +416,11 @@ func prepareConfiguredState(apiURL, userToken string, org Organization, manifest
 
 	integrationToken, err := performHeadlessOAuthFlow(config, userToken, verbose)
 	if err != nil {
-		return configuredState{}, err
+		return provisionedState{}, err
 	}
 
 	config.AccessToken = integrationToken.AccessToken
-	state := configuredState{
+	state := provisionedState{
 		Config:      config,
 		AccessToken: *integrationToken,
 	}
@@ -441,7 +441,7 @@ func prepareConfiguredState(apiURL, userToken string, org Organization, manifest
 
 		entity, err := resolveOrCreateTerminalEntity(apiURL, config.OrganizationID, config.IntegrationID, createEntityToken, opts)
 		if err != nil {
-			return configuredState{}, err
+			return provisionedState{}, err
 		}
 		state.TerminalEntity = entity
 	}
@@ -553,7 +553,7 @@ func resolveOrCreateTerminalEntity(apiURL, orgID, integID, token string, opts se
 	return nil, fmt.Errorf("failed to create terminal entity: %w", err)
 }
 
-func commitConfiguredState(state configuredState) (err error) {
+func commitProvisionedState(state provisionedState) (err error) {
 	type commitFile struct {
 		data    any
 		path    string
