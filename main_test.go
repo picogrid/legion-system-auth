@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"flag"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestMain(m *testing.M) {
@@ -1003,5 +1007,101 @@ func TestManifest_JSONOmitsEmptyScopes(t *testing.T) {
 
 	if _, ok := oauthRaw["scopes"]; ok {
 		t.Error("expected scopes to be omitted when nil")
+	}
+}
+
+// ============================================================================
+// Admin API
+// ============================================================================
+
+func TestValidateProvisionRequest(t *testing.T) {
+	valid := provisionRequest{
+		APIURL:   "https://api.example.com",
+		Username: "user",
+		Password: "pass",
+		OrgID:    "org-1",
+	}
+	if err := validateProvisionRequest(valid); err != nil {
+		t.Fatalf("valid request rejected: %v", err)
+	}
+
+	missing := provisionRequest{Username: "user", Password: "pass", OrgID: "org-1"}
+	if err := validateProvisionRequest(missing); err == nil {
+		t.Fatal("expected error for missing api_url")
+	}
+
+	withEntity := provisionRequest{
+		APIURL:       "https://api.example.com",
+		Username:     "user",
+		Password:     "pass",
+		OrgID:        "org-1",
+		CreateEntity: true,
+	}
+	if err := validateProvisionRequest(withEntity); err == nil || !strings.Contains(err.Error(), "entity_name") {
+		t.Fatalf("expected entity_name error, got %v", err)
+	}
+}
+
+func TestDecodeJSON_RejectsLargeBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/provision", strings.NewReader(`{"username":"`+strings.Repeat("a", maxJSONBodyBytes)+`"}`))
+	rec := httptest.NewRecorder()
+
+	var payload map[string]string
+	err := decodeJSON(rec, req, &payload)
+	if err == nil {
+		t.Fatal("expected request body to be rejected")
+	}
+}
+
+func TestDecodeJSON_RejectsMultipleTopLevelValues(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/provision", strings.NewReader(`{"username":"a"}{"username":"b"}`))
+	rec := httptest.NewRecorder()
+
+	var payload map[string]string
+	err := decodeJSON(rec, req, &payload)
+	if err == nil || !strings.Contains(err.Error(), "single JSON object") {
+		t.Fatalf("expected single-object validation error, got %v", err)
+	}
+}
+
+func TestWriteSetupError_PreservesForbidden(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeSetupError(rec, &HTTPError{StatusCode: http.StatusForbidden, Body: "forbidden"})
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal body failed: %v", err)
+	}
+	if body["error"] != "upstream_forbidden" {
+		t.Fatalf("error = %q, want %q", body["error"], "upstream_forbidden")
+	}
+}
+
+func TestCurrentTokenStatus(t *testing.T) {
+	saveAndRestoreStorageGlobals(t)
+	origGID := fileGID
+	fileGID = -1
+	defer func() { fileGID = origGID }()
+	dir := t.TempDir()
+	AccessTokenFile = filepath.Join(dir, "access_token.json")
+
+	token := StoredToken{
+		AccessToken: "token",
+		ExpiresAt:   time.Now().Add(10 * time.Minute).Format(time.RFC3339),
+	}
+	if err := saveJSON(AccessTokenFile, token); err != nil {
+		t.Fatalf("saveJSON failed: %v", err)
+	}
+
+	valid, expiresAt := currentTokenStatus()
+	if !valid {
+		t.Fatal("expected token to be valid")
+	}
+	if expiresAt == "" {
+		t.Fatal("expected token expiry to be returned")
 	}
 }
