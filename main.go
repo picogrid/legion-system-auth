@@ -100,7 +100,7 @@ func init() {
 		}
 	}
 
-	if fileGID < 0 {
+	if fileGID < 0 && os.Geteuid() == 0 {
 		if grp, err := user.LookupGroup(install.PicogridGroupName); err == nil {
 			if gid, err := strconv.Atoi(grp.Gid); err == nil {
 				fileGID = gid
@@ -2116,7 +2116,7 @@ func main() {
 	installCmd := flag.NewFlagSet("install-service", flag.ExitOnError)
 	installStoragePath := installCmd.String("storage-path", "", "Custom storage path")
 	installServiceUser := installCmd.String("service-user", "", "User to run the service as (Linux system-level only)")
-	installServiceGroup := installCmd.String("service-group", "", "Group to run the service as (Linux system-level only, default: primary group of service user)")
+	installServiceGroup := installCmd.String("service-group", "", "Group to run the service as (Linux system-level only, default: picogrid when present, else primary group of service user)")
 	installUserLevel := installCmd.Bool("user", false, "Install as user-level service (no sudo required)")
 
 	uninstallCmd := flag.NewFlagSet("uninstall-service", flag.ExitOnError)
@@ -2152,7 +2152,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "          --user           Install as user-level service (no sudo required)")
 		fmt.Fprintln(os.Stderr, "          --storage-path   Custom storage path")
 		fmt.Fprintln(os.Stderr, "          --service-user   User to run service as (Linux system-level only, default: pg if exists, else root)")
-		fmt.Fprintln(os.Stderr, "          --service-group  Group to run service as (Linux system-level only, default: primary group of service user)")
+		fmt.Fprintln(os.Stderr, "          --service-group  Group to run service as (Linux system-level only, default: picogrid when present, else primary group of service user)")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  uninstall-service")
 		fmt.Fprintln(os.Stderr, "        Uninstall the service (systemd/Launchd)")
