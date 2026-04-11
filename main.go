@@ -99,6 +99,14 @@ func init() {
 			fileGID = parsed
 		}
 	}
+
+	if fileGID < 0 {
+		if grp, err := user.LookupGroup(install.PicogridGroupName); err == nil {
+			if gid, err := strconv.Atoi(grp.Gid); err == nil {
+				fileGID = gid
+			}
+		}
+	}
 }
 
 // ============================================================================
@@ -2198,6 +2206,9 @@ func main() {
 			}
 			if *installServiceUser == "" {
 				*installServiceUser = install.DefaultServiceUser()
+			}
+			if *installServiceGroup == "" {
+				*installServiceGroup = install.DefaultServiceGroup()
 			}
 
 			// Setup storage first to ensure paths match defaults if not provided
