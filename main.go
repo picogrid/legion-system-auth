@@ -81,7 +81,7 @@ var (
 	shutdownChan = make(chan struct{})
 
 	// File permissions (env: LEGION_AUTH_FILE_GID)
-	filePermissions os.FileMode = 0640
+	filePermissions os.FileMode = 0644
 	fileGID                     = -1
 
 	// Valid terminal entity types for --entity-type flag and interactive menu.
@@ -1371,7 +1371,7 @@ func saveJSON(path string, data interface{}) error {
 		return fmt.Errorf("failed to marshal data: %w", err)
 	}
 
-	// Write with configured permissions (default 0640)
+	// Write with configured permissions (default 0644)
 	if err := os.WriteFile(path, file, filePermissions); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", path, err)
 	}
