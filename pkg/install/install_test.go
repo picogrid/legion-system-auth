@@ -49,6 +49,22 @@ func TestInstallServiceUserValidationPattern(t *testing.T) {
 	}
 }
 
+func TestDefaultServiceGroup(t *testing.T) {
+	_, pgErr := user.LookupGroup(PicogridGroupName)
+
+	got := DefaultServiceGroup()
+
+	if pgErr == nil {
+		if got != PicogridGroupName {
+			t.Fatalf("DefaultServiceGroup() = %q, want %q when group exists", got, PicogridGroupName)
+		}
+		return
+	}
+	if got != "" {
+		t.Fatalf("DefaultServiceGroup() = %q, want %q when group does not exist", got, "")
+	}
+}
+
 func TestInstallServiceGroupValidationPattern(t *testing.T) {
 	nonexistentGroup := nonexistentName("legion_auth_no_such_group")
 	if _, err := user.LookupGroup(nonexistentGroup); err == nil {
