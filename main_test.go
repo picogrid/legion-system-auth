@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 )
 
@@ -116,15 +115,15 @@ func TestFindOrgByID_FirstMatch(t *testing.T) {
 	}
 }
 
-func TestOrganizationPageDelta_UsesResultsLength(t *testing.T) {
-	if got := organizationPageDelta(7, 10); got != 7 {
-		t.Fatalf("organizationPageDelta(7, 10) = %d, want %d", got, 7)
+func TestPaginationStep_UsesResultsLength(t *testing.T) {
+	if got := paginationStep(7, 10); got != 7 {
+		t.Fatalf("paginationStep(7, 10) = %d, want %d", got, 7)
 	}
 }
 
-func TestOrganizationPageDelta_FallsBackWhenPageEmpty(t *testing.T) {
-	if got := organizationPageDelta(0, 10); got != 10 {
-		t.Fatalf("organizationPageDelta(0, 10) = %d, want %d", got, 10)
+func TestPaginationStep_FallsBackWhenPageEmpty(t *testing.T) {
+	if got := paginationStep(0, 10); got != 10 {
+		t.Fatalf("paginationStep(0, 10) = %d, want %d", got, 10)
 	}
 }
 
@@ -176,71 +175,19 @@ func TestGetOrganizationsPage_UsesOffsetAndLimitQueryParams(t *testing.T) {
 	}
 }
 
-func TestGetOrganizationsPage_DecodesIDAndNamePayload(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"paging": {"next": null, "previous": null},
-			"results": [{"id": "org-123", "name": "Picogrid Corp"}],
-			"total_count": 1
-		}`))
-	}))
-	defer server.Close()
-	useHTTPClient(t, server.Client())
-
-	page, err := getOrganizationsPage(server.URL, "test-token", 0, 3)
-	if err != nil {
-		t.Fatalf("getOrganizationsPage returned error: %v", err)
-	}
-
-	if len(page.Results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(page.Results))
-	}
-	if page.Results[0].OrganizationID != "org-123" {
-		t.Fatalf("OrganizationID = %q, want %q", page.Results[0].OrganizationID, "org-123")
-	}
-	if page.Results[0].OrganizationName != "Picogrid Corp" {
-		t.Fatalf("OrganizationName = %q, want %q", page.Results[0].OrganizationName, "Picogrid Corp")
-	}
-}
-
-func TestFindOrganizationByIDPaginated_FindsAcrossPages(t *testing.T) {
-	var requestedOffsets []int
+func TestGetOrganization_UsesOrgHeader(t *testing.T) {
+	var gotOrgID string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
-		if err != nil {
-			t.Fatalf("invalid offset query: %v", err)
+		if r.URL.Path != "/v3/organizations" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
-		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
-		if err != nil {
-			t.Fatalf("invalid limit query: %v", err)
-		}
-		if limit != 50 {
-			t.Fatalf("limit query = %d, want %d", limit, 50)
-		}
+		gotOrgID = r.Header.Get("X-ORG-ID")
 
-		requestedOffsets = append(requestedOffsets, offset)
-
-		resp := PagedOrganizations{
-			TotalCount: 60,
+		resp := Organization{
+			OrganizationID:   "org-59",
+			OrganizationName: "Omega",
 		}
-		if offset == 0 {
-			resp.Results = make([]Organization, 50)
-			for i := range resp.Results {
-				resp.Results[i] = Organization{
-					OrganizationID:   "org-" + strconv.Itoa(i+1),
-					OrganizationName: "Org " + strconv.Itoa(i+1),
-				}
-			}
-			next := 2
-			resp.Paging.Next = &next
-		} else if offset == 50 {
-			resp.Results = []Organization{{OrganizationID: "org-59", OrganizationName: "Omega"}}
-		} else {
-			t.Fatalf("unexpected offset requested: %d", offset)
-		}
-
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			t.Fatalf("encode response: %v", err)
 		}
@@ -248,41 +195,18 @@ func TestFindOrganizationByIDPaginated_FindsAcrossPages(t *testing.T) {
 	defer server.Close()
 	useHTTPClient(t, server.Client())
 
-	org, ok, err := findOrganizationByIDPaginated(server.URL, "test-token", "org-59")
+	org, err := getOrganization(server.URL, "test-token", "org-59")
 	if err != nil {
-		t.Fatalf("findOrganizationByIDPaginated returned error: %v", err)
+		t.Fatalf("getOrganization returned error: %v", err)
 	}
-	if !ok {
-		t.Fatal("expected organization to be found")
+	if gotOrgID != "org-59" {
+		t.Fatalf("X-ORG-ID header = %q, want %q", gotOrgID, "org-59")
+	}
+	if org.OrganizationID != "org-59" {
+		t.Fatalf("OrganizationID = %q, want %q", org.OrganizationID, "org-59")
 	}
 	if org.OrganizationName != "Omega" {
-		t.Fatalf("got org name %q, want %q", org.OrganizationName, "Omega")
-	}
-
-	if len(requestedOffsets) != 2 || requestedOffsets[0] != 0 || requestedOffsets[1] != 50 {
-		t.Fatalf("unexpected offsets requested: %v", requestedOffsets)
-	}
-}
-
-func TestFindOrganizationByIDPaginated_NotFound(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := PagedOrganizations{
-			Results:    []Organization{{OrganizationID: "org-1", OrganizationName: "Alpha"}},
-			TotalCount: 1,
-		}
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			t.Fatalf("encode response: %v", err)
-		}
-	}))
-	defer server.Close()
-	useHTTPClient(t, server.Client())
-
-	_, ok, err := findOrganizationByIDPaginated(server.URL, "test-token", "missing-org")
-	if err != nil {
-		t.Fatalf("findOrganizationByIDPaginated returned error: %v", err)
-	}
-	if ok {
-		t.Fatal("expected organization not to be found")
+		t.Fatalf("OrganizationName = %q, want %q", org.OrganizationName, "Omega")
 	}
 }
 
