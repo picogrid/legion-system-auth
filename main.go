@@ -139,8 +139,8 @@ type StoredToken struct {
 }
 
 type Organization struct {
-	OrganizationID   string `json:"id"`
-	OrganizationName string `json:"name"`
+	OrganizationID   string `json:"organization_id"`
+	OrganizationName string `json:"organization_name"`
 	UserRole         string `json:"user_role"`
 }
 
