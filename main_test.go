@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"flag"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,6 +41,15 @@ func writeFile(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatalf("writeFile(%s): %v", path, err)
 	}
+}
+
+func useHTTPClient(t *testing.T, client *http.Client) {
+	t.Helper()
+	prev := httpClient
+	httpClient = client
+	t.Cleanup(func() {
+		httpClient = prev
+	})
 }
 
 // ============================================================================
@@ -101,6 +112,101 @@ func TestFindOrgByID_FirstMatch(t *testing.T) {
 	}
 	if org.OrganizationName != "First" {
 		t.Fatalf("expected first match, got %q", org.OrganizationName)
+	}
+}
+
+func TestPaginationStep_UsesResultsLength(t *testing.T) {
+	if got := paginationStep(7, 10); got != 7 {
+		t.Fatalf("paginationStep(7, 10) = %d, want %d", got, 7)
+	}
+}
+
+func TestPaginationStep_FallsBackWhenPageEmpty(t *testing.T) {
+	if got := paginationStep(0, 10); got != 10 {
+		t.Fatalf("paginationStep(0, 10) = %d, want %d", got, 10)
+	}
+}
+
+func TestGetOrganizationsPage_UsesOffsetAndLimitQueryParams(t *testing.T) {
+	var gotOffset, gotLimit string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v3/me/orgs" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		gotOffset = r.URL.Query().Get("offset")
+		gotLimit = r.URL.Query().Get("limit")
+		if auth := r.Header.Get("Authorization"); auth != "Bearer test-token" {
+			t.Fatalf("Authorization header = %q, want %q", auth, "Bearer test-token")
+		}
+
+		resp := PagedOrganizations{
+			Results:    []Organization{{OrganizationID: "org-1", OrganizationName: "Alpha"}},
+			TotalCount: 25,
+		}
+		next := 3
+		resp.Paging.Next = &next
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+	useHTTPClient(t, server.Client())
+
+	page, err := getOrganizationsPage(server.URL, "test-token", 10, 10)
+	if err != nil {
+		t.Fatalf("getOrganizationsPage returned error: %v", err)
+	}
+
+	if gotOffset != "10" {
+		t.Fatalf("offset query = %q, want %q", gotOffset, "10")
+	}
+	if gotLimit != "10" {
+		t.Fatalf("limit query = %q, want %q", gotLimit, "10")
+	}
+	if len(page.Results) != 1 || page.Results[0].OrganizationID != "org-1" {
+		t.Fatalf("unexpected page results: %+v", page.Results)
+	}
+	if page.TotalCount != 25 {
+		t.Fatalf("unexpected pagination metadata: %+v", *page)
+	}
+	if page.Paging.Next == nil || *page.Paging.Next != 3 {
+		t.Fatalf("unexpected paging.next: %+v", page.Paging)
+	}
+}
+
+func TestGetOrganization_UsesOrgHeader(t *testing.T) {
+	var gotOrgID string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v3/organizations" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		gotOrgID = r.Header.Get("X-ORG-ID")
+
+		resp := Organization{
+			OrganizationID:   "org-59",
+			OrganizationName: "Omega",
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+	useHTTPClient(t, server.Client())
+
+	org, err := getOrganization(server.URL, "test-token", "org-59")
+	if err != nil {
+		t.Fatalf("getOrganization returned error: %v", err)
+	}
+	if gotOrgID != "org-59" {
+		t.Fatalf("X-ORG-ID header = %q, want %q", gotOrgID, "org-59")
+	}
+	if org.OrganizationID != "org-59" {
+		t.Fatalf("OrganizationID = %q, want %q", org.OrganizationID, "org-59")
+	}
+	if org.OrganizationName != "Omega" {
+		t.Fatalf("OrganizationName = %q, want %q", org.OrganizationName, "Omega")
 	}
 }
 

@@ -55,6 +55,9 @@ const (
 	ColorGray   = "\033[90m"
 	ColorBold   = "\033[1m"
 	ColorReset  = "\033[0m"
+
+	orgSelectionPageSize = 10
+	integrationPageSize  = 10
 )
 
 var (
@@ -198,6 +201,15 @@ type PagedIntegrations struct {
 	Integrations []Integration `json:"integrations"`
 	Total        int           `json:"total"`
 	Offset       int           `json:"offset"`
+}
+
+type PagedOrganizations struct {
+	Paging struct {
+		Next     *int `json:"next"`
+		Previous *int `json:"previous"`
+	} `json:"paging"`
+	Results    []Organization `json:"results"`
+	TotalCount int            `json:"total_count"`
 }
 
 type EntitySearchResult struct {
@@ -737,13 +749,21 @@ func authenticateUser(tokenEndpoint, username, password string) (string, error) 
 	return resp.AccessToken, nil
 }
 
-func getOrganizations(legionAPIURL, token string) ([]Organization, error) {
+func getOrganizationsPage(legionAPIURL, token string, offset, limit int) (*PagedOrganizations, error) {
 	headers := map[string]string{"Authorization": "Bearer " + token}
-	var resp struct {
-		Results []Organization `json:"results"`
+	var resp PagedOrganizations
+	err := makeRequestJSON("GET", fmt.Sprintf("%s/v3/me/orgs?offset=%d&limit=%d", legionAPIURL, offset, limit), nil, headers, &resp)
+	return &resp, err
+}
+
+func getOrganization(legionAPIURL, token, orgID string) (Organization, error) {
+	headers := map[string]string{
+		"Authorization": "Bearer " + token,
+		"X-ORG-ID":      orgID,
 	}
-	err := makeRequestJSON("GET", fmt.Sprintf("%s/v3/me/orgs", legionAPIURL), nil, headers, &resp)
-	return resp.Results, err
+	var org Organization
+	err := makeRequestJSON("GET", fmt.Sprintf("%s/v3/organizations", legionAPIURL), nil, headers, &org)
+	return org, err
 }
 
 func findOrgByID(orgs []Organization, id string) (Organization, bool) {
@@ -755,18 +775,102 @@ func findOrgByID(orgs []Organization, id string) (Organization, bool) {
 	return Organization{}, false
 }
 
-func selectOrganization(orgs []Organization) Organization {
-	printColored("\nAvailable organizations:", ColorCyan, false)
-	for i, org := range orgs {
-		fmt.Printf("  %d. %s (%s)\n", i+1, org.OrganizationName, org.OrganizationID)
+func paginationStep(resultCount, fallback int) int {
+	if resultCount > 0 {
+		return resultCount
 	}
+	return fallback
+}
+
+func selectOrganization(legionAPIURL, token string) (Organization, error) {
+	printColored("\nAvailable organizations:", ColorCyan, false)
+	pageSize := orgSelectionPageSize
+	offset := 0
+	var offsetHistory []int
+	pageIndex := 1
 
 	for {
-		choice := inputPrompt("\nSelect organization (number): ")
-		idx, err := strconv.Atoi(choice)
-		if err == nil && idx > 0 && idx <= len(orgs) {
-			return orgs[idx-1]
+		page, err := getOrganizationsPage(legionAPIURL, token, offset, pageSize)
+		if err != nil {
+			return Organization{}, err
 		}
+
+		if len(page.Results) == 0 {
+			if offset == 0 {
+				return Organization{}, fmt.Errorf("no organizations found")
+			}
+			printError("No more organizations found.")
+			if len(offsetHistory) > 0 {
+				offset = offsetHistory[len(offsetHistory)-1]
+				offsetHistory = offsetHistory[:len(offsetHistory)-1]
+				pageIndex = max(1, pageIndex-1)
+			} else {
+				offset = max(0, offset-pageSize)
+			}
+			continue
+		}
+
+		total := page.TotalCount
+		if total < len(page.Results) {
+			total = len(page.Results)
+		}
+		totalPages := (total + pageSize - 1) / pageSize
+		if totalPages < 1 {
+			totalPages = 1
+		}
+		if totalPages < pageIndex {
+			totalPages = pageIndex
+		}
+
+		printInfo(fmt.Sprintf("Page %d of %d (showing %d of %d)", pageIndex, totalPages, len(page.Results), total))
+
+		for i, org := range page.Results {
+			fmt.Printf("  %d. %s (%s)\n", i+1, org.OrganizationName, org.OrganizationID)
+		}
+
+		hasPrev := page.Paging.Previous != nil || offset > 0
+		hasNext := page.Paging.Next != nil
+
+		optIdx := len(page.Results) + 1
+		nextOpt, prevOpt := 0, 0
+
+		if hasNext {
+			fmt.Printf("  %d. Next page\n", optIdx)
+			nextOpt = optIdx
+			optIdx++
+		}
+		if hasPrev {
+			fmt.Printf("  %d. Previous page\n", optIdx)
+			prevOpt = optIdx
+		}
+
+		choice := inputPrompt("\nSelect organization (number): ")
+		idx, convErr := strconv.Atoi(choice)
+		if convErr != nil {
+			printError("Invalid selection.")
+			continue
+		}
+
+		if idx > 0 && idx <= len(page.Results) {
+			return page.Results[idx-1], nil
+		}
+		if nextOpt > 0 && idx == nextOpt {
+			offsetHistory = append(offsetHistory, offset)
+			offset += paginationStep(len(page.Results), pageSize)
+			pageIndex++
+			continue
+		}
+		if prevOpt > 0 && idx == prevOpt {
+			if len(offsetHistory) > 0 {
+				offset = offsetHistory[len(offsetHistory)-1]
+				offsetHistory = offsetHistory[:len(offsetHistory)-1]
+			} else {
+				offset = max(0, offset-paginationStep(len(page.Results), pageSize))
+			}
+			pageIndex = max(1, pageIndex-1)
+			continue
+		}
+
 		printError("Invalid selection.")
 	}
 }
@@ -1091,8 +1195,10 @@ func findIntegrationByName(apiURL, token, orgID, name string) *Integration {
 
 func selectExistingIntegrationPaginated(apiURL, token, orgID string) *Integration {
 	printColored("\nExisting Integrations (paged):", ColorCyan, false)
-	pageSize := 10
+	pageSize := integrationPageSize
 	offset := 0
+	var offsetHistory []int
+	pageIndex := 1
 
 	for {
 		urlStr := fmt.Sprintf("%s/v3/integrations?offset=%d&limit=%d", apiURL, offset, pageSize)
@@ -1110,13 +1216,15 @@ func selectExistingIntegrationPaginated(apiURL, token, orgID string) *Integratio
 		}
 
 		total := page.Total
-		current := (offset / pageSize) + 1
 		totalPages := (total + pageSize - 1) / pageSize
 		if totalPages < 1 {
 			totalPages = 1
 		}
+		if totalPages < pageIndex {
+			totalPages = pageIndex
+		}
 
-		printInfo(fmt.Sprintf("Page %d of %d (showing %d of %d)", current, totalPages, len(page.Integrations), total))
+		printInfo(fmt.Sprintf("Page %d of %d (showing %d of %d)", pageIndex, totalPages, len(page.Integrations), total))
 
 		for i, integ := range page.Integrations {
 			fmt.Printf("  %d. %s (v%s)\n     ID: %s\n", i+1, integ.Name, integ.Version, integ.ID)
@@ -1151,11 +1259,19 @@ func selectExistingIntegrationPaginated(apiURL, token, orgID string) *Integratio
 			return &page.Integrations[idx-1]
 		}
 		if nextOpt > 0 && idx == nextOpt {
-			offset += pageSize
+			offsetHistory = append(offsetHistory, offset)
+			offset += paginationStep(len(page.Integrations), pageSize)
+			pageIndex++
 			continue
 		}
 		if prevOpt > 0 && idx == prevOpt {
-			offset -= pageSize
+			if len(offsetHistory) > 0 {
+				offset = offsetHistory[len(offsetHistory)-1]
+				offsetHistory = offsetHistory[:len(offsetHistory)-1]
+			} else {
+				offset = max(0, offset-paginationStep(len(page.Integrations), pageSize))
+			}
+			pageIndex = max(1, pageIndex-1)
 			continue
 		}
 		if idx == exitOpt {
@@ -1584,21 +1700,21 @@ func interactiveSetup(opts setupOpts) error {
 	}
 	printSuccess("Authenticated!")
 
-	orgs, err := getOrganizations(apiURL, token)
-	if err != nil || len(orgs) == 0 {
-		return fmt.Errorf("no organizations found")
-	}
-
-	var org Organization
+	var (
+		org Organization
+		err error
+	)
 	if opts.OrgID != "" {
-		found, ok := findOrgByID(orgs, opts.OrgID)
-		if !ok {
-			return fmt.Errorf("organization %q not found in available organizations", opts.OrgID)
+		org, err = getOrganization(apiURL, token, opts.OrgID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch organization %q: %w", opts.OrgID, err)
 		}
-		org = found
 		printSuccess(fmt.Sprintf("Using organization: %s (%s)", org.OrganizationName, org.OrganizationID))
 	} else {
-		org = selectOrganization(orgs)
+		org, err = selectOrganization(apiURL, token)
+		if err != nil {
+			return err
+		}
 	}
 
 	manifest := createManifestInteractively(opts)
