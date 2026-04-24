@@ -815,10 +815,18 @@ func findOrgByID(orgs []Organization, id string) (Organization, bool) {
 	return Organization{}, false
 }
 
+func organizationPageDelta(resultsLen, fallback int) int {
+	if resultsLen > 0 {
+		return resultsLen
+	}
+	return fallback
+}
+
 func selectOrganization(legionAPIURL, token string) (Organization, error) {
 	printColored("\nAvailable organizations:", ColorCyan, false)
 	pageSize := orgSelectionPageSize
 	offset := 0
+	var offsetHistory []int
 
 	for {
 		page, err := getOrganizationsPage(legionAPIURL, token, offset, pageSize)
@@ -831,7 +839,12 @@ func selectOrganization(legionAPIURL, token string) (Organization, error) {
 				return Organization{}, fmt.Errorf("no organizations found")
 			}
 			printError("No more organizations found.")
-			offset = max(0, offset-pageSize)
+			if len(offsetHistory) > 0 {
+				offset = offsetHistory[len(offsetHistory)-1]
+				offsetHistory = offsetHistory[:len(offsetHistory)-1]
+			} else {
+				offset = max(0, offset-pageSize)
+			}
 			continue
 		}
 
@@ -878,11 +891,17 @@ func selectOrganization(legionAPIURL, token string) (Organization, error) {
 			return page.Results[idx-1], nil
 		}
 		if nextOpt > 0 && idx == nextOpt {
-			offset += pageSize
+			offsetHistory = append(offsetHistory, offset)
+			offset += organizationPageDelta(len(page.Results), pageSize)
 			continue
 		}
 		if prevOpt > 0 && idx == prevOpt {
-			offset -= pageSize
+			if len(offsetHistory) > 0 {
+				offset = offsetHistory[len(offsetHistory)-1]
+				offsetHistory = offsetHistory[:len(offsetHistory)-1]
+			} else {
+				offset = max(0, offset-organizationPageDelta(len(page.Results), pageSize))
+			}
 			continue
 		}
 

@@ -116,6 +116,18 @@ func TestFindOrgByID_FirstMatch(t *testing.T) {
 	}
 }
 
+func TestOrganizationPageDelta_UsesResultsLength(t *testing.T) {
+	if got := organizationPageDelta(7, 10); got != 7 {
+		t.Fatalf("organizationPageDelta(7, 10) = %d, want %d", got, 7)
+	}
+}
+
+func TestOrganizationPageDelta_FallsBackWhenPageEmpty(t *testing.T) {
+	if got := organizationPageDelta(0, 10); got != 10 {
+		t.Fatalf("organizationPageDelta(0, 10) = %d, want %d", got, 10)
+	}
+}
+
 func TestGetOrganizationsPage_UsesOffsetAndLimitQueryParams(t *testing.T) {
 	var gotOffset, gotLimit string
 
