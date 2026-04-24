@@ -55,6 +55,10 @@ const (
 	ColorGray   = "\033[90m"
 	ColorBold   = "\033[1m"
 	ColorReset  = "\033[0m"
+
+	orgLookupPageSize    = 50
+	orgSelectionPageSize = 10
+	integrationPageSize  = 10
 )
 
 var (
@@ -200,9 +204,46 @@ type PagedIntegrations struct {
 	Offset       int           `json:"offset"`
 }
 
+type PagedOrganizations struct {
+	Paging struct {
+		Next     *int `json:"next"`
+		Previous *int `json:"previous"`
+	} `json:"paging"`
+	Results    []Organization `json:"results"`
+	TotalCount int            `json:"total_count"`
+}
+
 type EntitySearchResult struct {
 	Results    []map[string]interface{} `json:"results"`
 	TotalCount int                      `json:"total_count"`
+}
+
+func (o *Organization) UnmarshalJSON(data []byte) error {
+	type rawOrganization struct {
+		ID               string `json:"id"`
+		Name             string `json:"name"`
+		OrganizationID   string `json:"organization_id"`
+		OrganizationName string `json:"organization_name"`
+		UserRole         string `json:"user_role"`
+	}
+
+	var raw rawOrganization
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	o.OrganizationID = raw.OrganizationID
+	if o.OrganizationID == "" {
+		o.OrganizationID = raw.ID
+	}
+
+	o.OrganizationName = raw.OrganizationName
+	if o.OrganizationName == "" {
+		o.OrganizationName = raw.Name
+	}
+
+	o.UserRole = raw.UserRole
+	return nil
 }
 
 // setupOpts holds CLI flag values for non-interactive setup.
@@ -737,13 +778,32 @@ func authenticateUser(tokenEndpoint, username, password string) (string, error) 
 	return resp.AccessToken, nil
 }
 
-func getOrganizations(legionAPIURL, token string) ([]Organization, error) {
+func getOrganizationsPage(legionAPIURL, token string, offset, limit int) (*PagedOrganizations, error) {
 	headers := map[string]string{"Authorization": "Bearer " + token}
-	var resp struct {
-		Results []Organization `json:"results"`
+	var resp PagedOrganizations
+	err := makeRequestJSON("GET", fmt.Sprintf("%s/v3/me/orgs?offset=%d&limit=%d", legionAPIURL, offset, limit), nil, headers, &resp)
+	return &resp, err
+}
+
+func findOrganizationByIDPaginated(legionAPIURL, token, orgID string) (Organization, bool, error) {
+	pageSize := orgLookupPageSize
+	offset := 0
+
+	for {
+		page, err := getOrganizationsPage(legionAPIURL, token, offset, pageSize)
+		if err != nil {
+			return Organization{}, false, err
+		}
+
+		if org, ok := findOrgByID(page.Results, orgID); ok {
+			return org, true, nil
+		}
+
+		offset += len(page.Results)
+		if len(page.Results) == 0 || offset >= page.TotalCount || page.Paging.Next == nil {
+			return Organization{}, false, nil
+		}
 	}
-	err := makeRequestJSON("GET", fmt.Sprintf("%s/v3/me/orgs", legionAPIURL), nil, headers, &resp)
-	return resp.Results, err
 }
 
 func findOrgByID(orgs []Organization, id string) (Organization, bool) {
@@ -755,18 +815,78 @@ func findOrgByID(orgs []Organization, id string) (Organization, bool) {
 	return Organization{}, false
 }
 
-func selectOrganization(orgs []Organization) Organization {
+func selectOrganization(legionAPIURL, token string) (Organization, error) {
 	printColored("\nAvailable organizations:", ColorCyan, false)
-	for i, org := range orgs {
-		fmt.Printf("  %d. %s (%s)\n", i+1, org.OrganizationName, org.OrganizationID)
-	}
+	pageSize := orgSelectionPageSize
+	offset := 0
 
 	for {
-		choice := inputPrompt("\nSelect organization (number): ")
-		idx, err := strconv.Atoi(choice)
-		if err == nil && idx > 0 && idx <= len(orgs) {
-			return orgs[idx-1]
+		page, err := getOrganizationsPage(legionAPIURL, token, offset, pageSize)
+		if err != nil {
+			return Organization{}, err
 		}
+
+		if len(page.Results) == 0 {
+			if offset == 0 {
+				return Organization{}, fmt.Errorf("no organizations found")
+			}
+			printError("No more organizations found.")
+			offset = max(0, offset-pageSize)
+			continue
+		}
+
+		total := page.TotalCount
+		if total < len(page.Results) {
+			total = len(page.Results)
+		}
+		current := (offset / pageSize) + 1
+		totalPages := (total + pageSize - 1) / pageSize
+		if totalPages < 1 {
+			totalPages = 1
+		}
+
+		printInfo(fmt.Sprintf("Page %d of %d (showing %d of %d)", current, totalPages, len(page.Results), total))
+
+		for i, org := range page.Results {
+			fmt.Printf("  %d. %s (%s)\n", i+1, org.OrganizationName, org.OrganizationID)
+		}
+
+		hasPrev := page.Paging.Previous != nil || offset > 0
+		hasNext := page.Paging.Next != nil
+
+		optIdx := len(page.Results) + 1
+		nextOpt, prevOpt := 0, 0
+
+		if hasNext {
+			fmt.Printf("  %d. Next page\n", optIdx)
+			nextOpt = optIdx
+			optIdx++
+		}
+		if hasPrev {
+			fmt.Printf("  %d. Previous page\n", optIdx)
+			prevOpt = optIdx
+			optIdx++
+		}
+
+		choice := inputPrompt("\nSelect organization (number): ")
+		idx, convErr := strconv.Atoi(choice)
+		if convErr != nil {
+			printError("Invalid selection.")
+			continue
+		}
+
+		if idx > 0 && idx <= len(page.Results) {
+			return page.Results[idx-1], nil
+		}
+		if nextOpt > 0 && idx == nextOpt {
+			offset += pageSize
+			continue
+		}
+		if prevOpt > 0 && idx == prevOpt {
+			offset -= pageSize
+			continue
+		}
+
 		printError("Invalid selection.")
 	}
 }
@@ -1091,7 +1211,7 @@ func findIntegrationByName(apiURL, token, orgID, name string) *Integration {
 
 func selectExistingIntegrationPaginated(apiURL, token, orgID string) *Integration {
 	printColored("\nExisting Integrations (paged):", ColorCyan, false)
-	pageSize := 10
+	pageSize := integrationPageSize
 	offset := 0
 
 	for {
@@ -1584,21 +1704,25 @@ func interactiveSetup(opts setupOpts) error {
 	}
 	printSuccess("Authenticated!")
 
-	orgs, err := getOrganizations(apiURL, token)
-	if err != nil || len(orgs) == 0 {
-		return fmt.Errorf("no organizations found")
-	}
-
-	var org Organization
+	var (
+		org Organization
+		err error
+	)
 	if opts.OrgID != "" {
-		found, ok := findOrgByID(orgs, opts.OrgID)
+		found, ok, err := findOrganizationByIDPaginated(apiURL, token, opts.OrgID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch organizations: %w", err)
+		}
 		if !ok {
 			return fmt.Errorf("organization %q not found in available organizations", opts.OrgID)
 		}
 		org = found
 		printSuccess(fmt.Sprintf("Using organization: %s (%s)", org.OrganizationName, org.OrganizationID))
 	} else {
-		org = selectOrganization(orgs)
+		org, err = selectOrganization(apiURL, token)
+		if err != nil {
+			return err
+		}
 	}
 
 	manifest := createManifestInteractively(opts)
