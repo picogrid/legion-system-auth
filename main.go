@@ -865,7 +865,6 @@ func selectOrganization(legionAPIURL, token string) (Organization, error) {
 		if hasPrev {
 			fmt.Printf("  %d. Previous page\n", optIdx)
 			prevOpt = optIdx
-			optIdx++
 		}
 
 		choice := inputPrompt("\nSelect organization (number): ")
