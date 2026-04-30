@@ -757,13 +757,15 @@ func getOrganizationsPage(legionAPIURL, token string, offset, limit int) (*Paged
 }
 
 func getOrganization(legionAPIURL, token, orgID string) (Organization, error) {
-	headers := map[string]string{
-		"Authorization": "Bearer " + token,
-		"X-ORG-ID":      orgID,
+	page, err := getOrganizationsPage(legionAPIURL, token, 0, 50)
+	if err != nil {
+		return Organization{}, fmt.Errorf("fetch organizations: %w", err)
 	}
-	var org Organization
-	err := makeRequestJSON("GET", fmt.Sprintf("%s/v3/organizations", legionAPIURL), nil, headers, &org)
-	return org, err
+	org, ok := findOrgByID(page.Results, orgID)
+	if !ok {
+		return Organization{}, fmt.Errorf("organization %q not found in available organizations", orgID)
+	}
+	return org, nil
 }
 
 func findOrgByID(orgs []Organization, id string) (Organization, bool) {
