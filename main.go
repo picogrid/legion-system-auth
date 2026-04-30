@@ -757,15 +757,21 @@ func getOrganizationsPage(legionAPIURL, token string, offset, limit int) (*Paged
 }
 
 func getOrganization(legionAPIURL, token, orgID string) (Organization, error) {
-	page, err := getOrganizationsPage(legionAPIURL, token, 0, 50)
-	if err != nil {
-		return Organization{}, fmt.Errorf("fetch organizations: %w", err)
+	const limit = 50
+	offset := 0
+	for {
+		page, err := getOrganizationsPage(legionAPIURL, token, offset, limit)
+		if err != nil {
+			return Organization{}, fmt.Errorf("fetch organizations: %w", err)
+		}
+		if org, ok := findOrgByID(page.Results, orgID); ok {
+			return org, nil
+		}
+		if page.Paging.Next == nil {
+			return Organization{}, fmt.Errorf("organization %q not found in available organizations", orgID)
+		}
+		offset += paginationStep(len(page.Results), limit)
 	}
-	org, ok := findOrgByID(page.Results, orgID)
-	if !ok {
-		return Organization{}, fmt.Errorf("organization %q not found in available organizations", orgID)
-	}
-	return org, nil
 }
 
 func findOrgByID(orgs []Organization, id string) (Organization, bool) {
