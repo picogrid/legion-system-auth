@@ -175,18 +175,17 @@ func TestGetOrganizationsPage_UsesOffsetAndLimitQueryParams(t *testing.T) {
 	}
 }
 
-func TestGetOrganization_UsesOrgHeader(t *testing.T) {
-	var gotOrgID string
-
+func TestGetOrganization_LooksUpFromPagedOrgs(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v3/organizations" {
-			t.Fatalf("unexpected path %q", r.URL.Path)
+		if r.URL.Path != "/v3/me/orgs" {
+			t.Fatalf("unexpected path %q, want /v3/me/orgs", r.URL.Path)
 		}
-		gotOrgID = r.Header.Get("X-ORG-ID")
-
-		resp := Organization{
-			OrganizationID:   "org-59",
-			OrganizationName: "Omega",
+		resp := PagedOrganizations{
+			Results: []Organization{
+				{OrganizationID: "org-1", OrganizationName: "Alpha"},
+				{OrganizationID: "org-59", OrganizationName: "Omega"},
+			},
+			TotalCount: 2,
 		}
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			t.Fatalf("encode response: %v", err)
@@ -199,14 +198,30 @@ func TestGetOrganization_UsesOrgHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getOrganization returned error: %v", err)
 	}
-	if gotOrgID != "org-59" {
-		t.Fatalf("X-ORG-ID header = %q, want %q", gotOrgID, "org-59")
-	}
 	if org.OrganizationID != "org-59" {
 		t.Fatalf("OrganizationID = %q, want %q", org.OrganizationID, "org-59")
 	}
 	if org.OrganizationName != "Omega" {
 		t.Fatalf("OrganizationName = %q, want %q", org.OrganizationName, "Omega")
+	}
+}
+
+func TestGetOrganization_NotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := PagedOrganizations{
+			Results:    []Organization{{OrganizationID: "org-1", OrganizationName: "Alpha"}},
+			TotalCount: 1,
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+	useHTTPClient(t, server.Client())
+
+	_, err := getOrganization(server.URL, "test-token", "org-missing")
+	if err == nil {
+		t.Fatal("expected error for missing org, got nil")
 	}
 }
 
