@@ -1992,6 +1992,12 @@ func switchOrg(opts setupOpts) error {
 			return fmt.Errorf("auth failed: %w", err)
 		}
 	} else {
+		// TODO: this interactive credential prompt + retry loop is parallel to the
+		// one in interactiveSetup; consider extracting a shared helper if a third
+		// caller appears.
+		if opts.Username == "" {
+			printInfo("\nEnter Credentials")
+		}
 		for {
 			password := readPasswordSimple("Password: ")
 			token, err = authenticateUser(oauthCfg.TokenEndpoint, username, password)
@@ -2081,6 +2087,8 @@ func switchOrg(opts setupOpts) error {
 		entityToken = token
 		printWarning("Headless OAuth token unavailable; using initial user token for entity creation.")
 	}
+	// switch-org always provisions the device's terminal in the new org (unlike
+	// setup, which gates entity creation behind --create-entity).
 	createTerminalEntity(apiURL, newOrg.OrganizationID, config.IntegrationID, entityToken, opts)
 
 	// Old-org cleanup, performed last and best-effort so a failure never leaves
