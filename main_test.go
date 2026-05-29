@@ -1301,3 +1301,85 @@ func TestResolveIntegration_CreatesAndReturnsConfig(t *testing.T) {
 		t.Errorf("LegionBaseURL = %q, want %q", cfg.LegionBaseURL, server.URL)
 	}
 }
+
+func TestLoadCurrentContext_ReadsConfigAndEntity(t *testing.T) {
+	saveAndRestoreStorageGlobals(t)
+	dir := t.TempDir()
+	ConfigFile = filepath.Join(dir, "oauth_config.json")
+	TerminalEntityFile = filepath.Join(dir, "terminal_entity.json")
+
+	cfg := AppConfig{
+		OrganizationID:   "org-old",
+		OrganizationName: "OldOrg",
+		LegionBaseURL:    "https://legion.example.com",
+		Manifest:         Manifest{Name: "DEV", Version: "1.0.0"},
+	}
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	writeFile(t, ConfigFile, data)
+
+	entity := map[string]interface{}{
+		"id": "ent-old",
+		"metadata": map[string]interface{}{
+			"serial_number": "sn-1",
+			"terminal_type": "lander",
+		},
+	}
+	edata, _ := json.MarshalIndent(entity, "", "  ")
+	writeFile(t, TerminalEntityFile, edata)
+
+	ctx, err := loadCurrentContext()
+	if err != nil {
+		t.Fatalf("loadCurrentContext: %v", err)
+	}
+	if ctx.OrgID != "org-old" {
+		t.Errorf("OrgID = %q", ctx.OrgID)
+	}
+	if ctx.OrgName != "OldOrg" {
+		t.Errorf("OrgName = %q", ctx.OrgName)
+	}
+	if ctx.APIURL != "https://legion.example.com" {
+		t.Errorf("APIURL = %q", ctx.APIURL)
+	}
+	if ctx.EntityID != "ent-old" {
+		t.Errorf("EntityID = %q", ctx.EntityID)
+	}
+	if ctx.Serial != "sn-1" {
+		t.Errorf("Serial = %q", ctx.Serial)
+	}
+	if ctx.Type != "lander" {
+		t.Errorf("Type = %q", ctx.Type)
+	}
+	if ctx.Manifest.Name != "DEV" {
+		t.Errorf("Manifest.Name = %q", ctx.Manifest.Name)
+	}
+}
+
+func TestLoadCurrentContext_MissingConfigErrors(t *testing.T) {
+	saveAndRestoreStorageGlobals(t)
+	dir := t.TempDir()
+	ConfigFile = filepath.Join(dir, "does-not-exist.json")
+	TerminalEntityFile = filepath.Join(dir, "terminal_entity.json")
+
+	if _, err := loadCurrentContext(); err == nil {
+		t.Fatal("expected error when config missing")
+	}
+}
+
+func TestLoadCurrentContext_NoEntityFileStillOK(t *testing.T) {
+	saveAndRestoreStorageGlobals(t)
+	dir := t.TempDir()
+	ConfigFile = filepath.Join(dir, "oauth_config.json")
+	TerminalEntityFile = filepath.Join(dir, "terminal_entity.json")
+
+	cfg := AppConfig{OrganizationID: "org-old", LegionBaseURL: "https://x"}
+	data, _ := json.Marshal(cfg)
+	writeFile(t, ConfigFile, data)
+
+	ctx, err := loadCurrentContext()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ctx.EntityID != "" {
+		t.Errorf("EntityID = %q, want empty", ctx.EntityID)
+	}
+}

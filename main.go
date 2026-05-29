@@ -1872,6 +1872,53 @@ func interactiveSetup(opts setupOpts) error {
 	return nil
 }
 
+// switchContext captures the device's current org/integration/terminal identity,
+// read before switch-org overwrites the stored config. It supplies the old-org
+// IDs needed for cleanup and the serial/type reused for the new-org terminal.
+type switchContext struct {
+	OrgID    string
+	OrgName  string
+	APIURL   string
+	Manifest Manifest
+	EntityID string
+	Serial   string
+	Type     string
+}
+
+// loadCurrentContext reads the existing oauth_config.json (required) and
+// terminal_entity.json (optional) into a switchContext. It returns an error if
+// no configuration exists, meaning setup has not been run yet.
+func loadCurrentContext() (*switchContext, error) {
+	// #nosec G304 -- ConfigFile is initialized from the controlled storage path during setupStorage.
+	content, err := os.ReadFile(ConfigFile)
+	if err != nil {
+		return nil, fmt.Errorf("no existing configuration found at %s (run 'legion-auth setup' first): %w", ConfigFile, err)
+	}
+	var config AppConfig
+	if err := json.Unmarshal(content, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", ConfigFile, err)
+	}
+
+	ctx := &switchContext{
+		OrgID:    config.OrganizationID,
+		OrgName:  config.OrganizationName,
+		APIURL:   config.LegionBaseURL,
+		Manifest: config.Manifest,
+	}
+
+	if entity, err := loadCachedTerminalEntity(); err == nil {
+		ctx.EntityID = entityIDFromMap(entity)
+		ctx.Serial = entitySerialNumberFromMap(entity)
+		if meta, ok := entity["metadata"].(map[string]interface{}); ok {
+			if t, ok := meta["terminal_type"].(string); ok {
+				ctx.Type = t
+			}
+		}
+	}
+
+	return ctx, nil
+}
+
 var errEntityNotFound = errors.New("entity not found")
 
 func entityIDFromMap(entity map[string]interface{}) string {
