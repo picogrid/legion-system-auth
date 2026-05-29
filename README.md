@@ -81,6 +81,34 @@ legion-auth setup
 legion-auth setup --create-entity
 ```
 
+### Switching Organizations
+
+To move a device to a different organization, re-authenticate and re-provision in
+the target org:
+
+```bash
+legion-auth switch-org
+```
+
+This re-authenticates you, creates (or reuses) an integration in the target org,
+re-runs the OAuth flow, and provisions the device's terminal entity in the new
+org — reusing the existing terminal (matched by serial number) when it already
+exists there. You will be prompted whether to delete the terminal entity from the
+previous org.
+
+**Options:**
+- `--org-id <id>`: Target organization (skips the selector)
+- `--api-url <url>`: Legion API URL (defaults to the stored value)
+- `--entity-name` / `--entity-type`: Override the reused terminal serial/type
+- `--remove-old`: Delete the previous org's terminal entity (non-interactive)
+- `--non-interactive`: Run unattended (requires `--org-id`, `--username`, `--password`)
+
+**Example (unattended fleet switch):**
+```bash
+legion-auth switch-org --non-interactive \
+  --org-id org-123 --username svc --password "$PG_PASS" --remove-old
+```
+
 ### 2. Install as a Service (Recommended)
 
 To ensure the token monitor runs automatically and keeps credentials fresh, you can install as either a **user-level** or **system-level** service:
