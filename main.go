@@ -541,6 +541,23 @@ func setupStorage(customPath string) error {
 		return fmt.Errorf("failed to create storage path %s: %w", StoragePath, err)
 	}
 
+	// Ensure the directory is traversable by the service group regardless of the
+	// process umask or whether the pg user exists. setOwnership early-returns
+	// before its own chmod when pg is absent or chown fails, which previously left
+	// the directory at a restrictive umask mode (e.g. 0700) and broke token reads
+	// by the daemon after re-running setup.
+	// #nosec G302 -- directory needs the execute bit for the service user/group to traverse.
+	if err := os.Chmod(StoragePath, 0750); err != nil {
+		logger.Warn("failed to chmod storage path", slog.String("path", StoragePath), slog.String("error", err.Error()))
+	}
+	if os.Geteuid() == 0 {
+		parent := filepath.Dir(StoragePath)
+		// #nosec G302 -- parent directory needs the execute bit for traversal to the storage path.
+		if err := os.Chmod(parent, 0755); err != nil {
+			logger.Warn("failed to chmod parent of storage path", slog.String("path", parent), slog.String("error", err.Error()))
+		}
+	}
+
 	setOwnership(StoragePath)
 
 	// Check write permission
