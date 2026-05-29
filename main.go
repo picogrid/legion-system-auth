@@ -2532,6 +2532,9 @@ func main() {
 	uninstallCmd := flag.NewFlagSet("uninstall-service", flag.ExitOnError)
 	uninstallUserLevel := uninstallCmd.Bool("user", false, "Uninstall user-level service")
 
+	switchCmd := flag.NewFlagSet("switch-org", flag.ExitOnError)
+	switchFlags := registerSwitchOrgFlags(switchCmd)
+
 	storagePathFlag := flag.String("storage-path", "", "Custom storage path")
 
 	flag.Usage = func() {
@@ -2554,6 +2557,20 @@ func main() {
 		fmt.Fprintln(os.Stderr, "          --entity-name    Terminal entity name / serial number")
 		fmt.Fprintln(os.Stderr, "          --entity-type    Terminal type: lander/helios/portal/dev-unit")
 		fmt.Fprintln(os.Stderr, "          --non-interactive Run without prompts, use flags and defaults")
+
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  switch-org")
+		fmt.Fprintln(os.Stderr, "        Switch the device to a different organization")
+		fmt.Fprintln(os.Stderr, "        Flags:")
+		fmt.Fprintln(os.Stderr, "          --org-id         Target organization ID (skips org selector)")
+		fmt.Fprintln(os.Stderr, "          --username       Username for authentication")
+		fmt.Fprintln(os.Stderr, "          --password       Password for authentication")
+		fmt.Fprintln(os.Stderr, "          --api-url        Legion API URL (default: stored value)")
+		fmt.Fprintln(os.Stderr, "          --entity-name    Terminal serial number (default: reuse current)")
+		fmt.Fprintln(os.Stderr, "          --entity-type    Terminal type: lander/helios/portal/dev-unit (default: reuse current)")
+		fmt.Fprintln(os.Stderr, "          --remove-old     Delete the terminal entity from the previous org")
+		fmt.Fprintln(os.Stderr, "          --storage-path   Custom storage path")
+		fmt.Fprintln(os.Stderr, "          --non-interactive Run without prompts, use flags")
 
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  install-service")
@@ -2602,6 +2619,26 @@ func main() {
 			}
 
 			if err := interactiveSetup(setupFlags.Opts); err != nil {
+				printError(err.Error())
+				os.Exit(1)
+			}
+
+			return
+
+		case "switch-org":
+
+			if err := switchCmd.Parse(os.Args[2:]); err != nil {
+				printError(fmt.Sprintf("Failed to parse switch-org flags: %v", err))
+				os.Exit(1)
+			}
+			applySetupEnvDefaults(switchFlags)
+
+			if err := setupStorage(switchFlags.StoragePath); err != nil {
+				printError(fmt.Sprintf("Storage setup failed: %v", err))
+				os.Exit(1)
+			}
+
+			if err := switchOrg(switchFlags.Opts); err != nil {
 				printError(err.Error())
 				os.Exit(1)
 			}
