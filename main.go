@@ -277,7 +277,7 @@ func registerSwitchOrgFlags(fs *flag.FlagSet) *setupFlagResult {
 	fs.StringVar(&r.Opts.EntityName, "entity-name", "", "Terminal entity name / serial number (default: reuse current)")
 	fs.StringVar(&r.Opts.EntityType, "entity-type", "", "Terminal type: lander/helios/portal/dev-unit (default: reuse current)")
 	fs.BoolVar(&r.Opts.RemoveOld, "remove-old", false, "Delete the terminal entity from the previous org")
-	fs.BoolVar(&r.Opts.NonInteractive, "non-interactive", false, "Run without prompts, use flags")
+	fs.BoolVar(&r.Opts.NonInteractive, "non-interactive", false, "Run without prompts, use flags and defaults")
 	return r
 }
 
@@ -300,6 +300,7 @@ func registerSwitchOrgFlags(fs *flag.FlagSet) *setupFlagResult {
 //	--entity-type      → LEGION_AUTH_ENTITY_TYPE
 //	--create-entity    → LEGION_AUTH_CREATE_ENTITY  ("true"/"1" to enable)
 //	--non-interactive  → LEGION_AUTH_NON_INTERACTIVE ("true"/"1" to enable)
+//	--remove-old       → LEGION_AUTH_REMOVE_OLD      ("true"/"1" to enable)
 func applySetupEnvDefaults(r *setupFlagResult) {
 	envStr := func(ptr *string, envKey string) {
 		if *ptr == "" {

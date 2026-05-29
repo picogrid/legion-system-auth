@@ -609,6 +609,7 @@ func TestApplySetupEnvDefaults_FillsEmptyFields(t *testing.T) {
 		"LEGION_AUTH_ENTITY_TYPE":      "helios",
 		"LEGION_AUTH_CREATE_ENTITY":    "true",
 		"LEGION_AUTH_NON_INTERACTIVE":  "1",
+		"LEGION_AUTH_REMOVE_OLD":       "true",
 	}
 	for k, v := range envVars {
 		setEnvForTest(t, k, v)
@@ -650,6 +651,9 @@ func TestApplySetupEnvDefaults_FillsEmptyFields(t *testing.T) {
 	}
 	if !r.Opts.NonInteractive {
 		t.Error("NonInteractive should be true from env")
+	}
+	if !r.Opts.RemoveOld {
+		t.Error("RemoveOld should be true from env")
 	}
 }
 
