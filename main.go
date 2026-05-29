@@ -1195,6 +1195,76 @@ func createIntegration(apiURL, token, orgID string, manifest Manifest) (*Integra
 	return &integ, nil
 }
 
+// resolveIntegration creates (or finds, on conflict) the org's integration and
+// returns a fully populated AppConfig ready to persist. Shared by setup and
+// switch-org. On a 409 it falls back to finding the integration by name
+// (non-interactive) or a paginated picker (interactive). It regenerates the
+// client secret when the platform returns an empty or redacted one.
+func resolveIntegration(apiURL, token string, org Organization, manifest Manifest, nonInteractive bool) (*AppConfig, error) {
+	integ, err := createIntegration(apiURL, token, org.OrganizationID, manifest)
+	if err != nil {
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
+			printWarning("Integration exists.")
+			if nonInteractive {
+				integ = findIntegrationByName(apiURL, token, org.OrganizationID, manifest.Name)
+			} else {
+				integ = selectExistingIntegrationPaginated(apiURL, token, org.OrganizationID)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to create integration: %w", err)
+		}
+	}
+	if integ == nil {
+		return nil, fmt.Errorf("no integration selected")
+	}
+
+	var clientID, clientSecret string
+	if integ.OAuthConfig != nil {
+		clientID = integ.OAuthConfig.ClientID
+		clientSecret = integ.OAuthConfig.ClientSecret
+	}
+
+	if len(integ.Manifest) > 0 {
+		var m Manifest
+		if err := json.Unmarshal(integ.Manifest, &m); err == nil {
+			manifest = m
+		}
+	}
+
+	if clientID == "" {
+		cfg, err := getIntegrationOAuthConfig(apiURL, token, org.OrganizationID, integ.ID)
+		if err == nil {
+			clientID = cfg.ClientID
+			clientSecret = cfg.ClientSecret
+		}
+	}
+
+	if clientID != "" && (clientSecret == "" || clientSecret == "[REDACTED]") {
+		printWarning("Regenerating client secret...")
+		clientSecret, err = regenerateClientSecret(apiURL, token, org.OrganizationID, integ.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to regenerate client secret: %w", err)
+		}
+	}
+
+	redirectURL := ""
+	if len(manifest.OAuthConfig.RedirectURLs) > 0 {
+		redirectURL = manifest.OAuthConfig.RedirectURLs[0]
+	}
+
+	return &AppConfig{
+		IntegrationID:    integ.ID,
+		ClientID:         clientID,
+		ClientSecret:     clientSecret,
+		RedirectURL:      redirectURL,
+		OrganizationID:   org.OrganizationID,
+		OrganizationName: org.OrganizationName,
+		LegionBaseURL:    apiURL,
+		Manifest:         manifest,
+	}, nil
+}
+
 func findIntegrationByName(apiURL, token, orgID, name string) *Integration {
 	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
 	pageSize := 50
@@ -1749,71 +1819,11 @@ func interactiveSetup(opts setupOpts) error {
 	manifest := createManifestInteractively(opts)
 
 	printInfo("\nCreating integration...")
-	integ, err := createIntegration(apiURL, token, org.OrganizationID, manifest)
+	cfg, err := resolveIntegration(apiURL, token, org, manifest, opts.NonInteractive)
 	if err != nil {
-		var httpErr *HTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
-			printWarning("Integration exists.")
-			if opts.NonInteractive {
-				integ = findIntegrationByName(apiURL, token, org.OrganizationID, manifest.Name)
-			} else {
-				integ = selectExistingIntegrationPaginated(apiURL, token, org.OrganizationID)
-			}
-		} else {
-			return fmt.Errorf("failed to create integration: %w", err)
-		}
+		return err
 	}
-
-	if integ == nil {
-		return fmt.Errorf("no integration selected")
-	}
-
-	// Get OAuth Credentials
-	var clientID, clientSecret string
-	if integ.OAuthConfig != nil {
-		clientID = integ.OAuthConfig.ClientID
-		clientSecret = integ.OAuthConfig.ClientSecret
-	}
-
-	// Update manifest from integration if available
-	if len(integ.Manifest) > 0 {
-		var m Manifest
-		if err := json.Unmarshal(integ.Manifest, &m); err == nil {
-			manifest = m
-		}
-	}
-
-	if clientID == "" {
-		cfg, err := getIntegrationOAuthConfig(apiURL, token, org.OrganizationID, integ.ID)
-		if err == nil {
-			clientID = cfg.ClientID
-			clientSecret = cfg.ClientSecret
-		}
-	}
-
-	if clientID != "" && (clientSecret == "" || clientSecret == "[REDACTED]") {
-		printWarning("Regenerating client secret...")
-		clientSecret, err = regenerateClientSecret(apiURL, token, org.OrganizationID, integ.ID)
-		if err != nil {
-			return fmt.Errorf("failed to regenerate client secret: %w", err)
-		}
-	}
-
-	redirectURL := ""
-	if len(manifest.OAuthConfig.RedirectURLs) > 0 {
-		redirectURL = manifest.OAuthConfig.RedirectURLs[0]
-	}
-
-	config := AppConfig{
-		IntegrationID:    integ.ID,
-		ClientID:         clientID,
-		ClientSecret:     clientSecret,
-		RedirectURL:      redirectURL,
-		OrganizationID:   org.OrganizationID,
-		OrganizationName: org.OrganizationName,
-		LegionBaseURL:    apiURL,
-		Manifest:         manifest,
-	}
+	config := *cfg
 
 	if err := saveJSON(ConfigFile, config); err != nil {
 		return fmt.Errorf("critical: failed to save configuration: %w", err)

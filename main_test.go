@@ -1195,3 +1195,67 @@ func TestApplySetupEnvDefaults_RemoveOld(t *testing.T) {
 		t.Error("RemoveOld should be true from LEGION_AUTH_REMOVE_OLD env")
 	}
 }
+
+func TestResolveIntegration_CreatesAndReturnsConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/v3/integrations" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("X-ORG-ID") != "org-new" {
+			t.Errorf("X-ORG-ID = %q, want org-new", r.Header.Get("X-ORG-ID"))
+		}
+		if r.Header.Get("Authorization") != "Bearer user-token" {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		resp := Integration{
+			ID:      "int-1",
+			Name:    "MY-DEV",
+			Version: "1.0.0",
+			OAuthConfig: &IntOAuthCfg{
+				ClientID:     "cid",
+				ClientSecret: "secret",
+				RedirectURLs: []string{"http://localhost:8000/cb"},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+	}))
+	defer server.Close()
+	useHTTPClient(t, server.Client())
+
+	manifest := Manifest{
+		Name:    "MY-DEV",
+		Version: "1.0.0",
+		OAuthConfig: ManifestOAuthConfig{
+			RedirectURLs: []string{"http://localhost:8000/cb"},
+		},
+	}
+	org := Organization{OrganizationID: "org-new", OrganizationName: "NewOrg"}
+
+	cfg, err := resolveIntegration(server.URL, "user-token", org, manifest, true)
+	if err != nil {
+		t.Fatalf("resolveIntegration: %v", err)
+	}
+	if cfg.IntegrationID != "int-1" {
+		t.Errorf("IntegrationID = %q", cfg.IntegrationID)
+	}
+	if cfg.ClientID != "cid" {
+		t.Errorf("ClientID = %q", cfg.ClientID)
+	}
+	if cfg.ClientSecret != "secret" {
+		t.Errorf("ClientSecret = %q", cfg.ClientSecret)
+	}
+	if cfg.RedirectURL != "http://localhost:8000/cb" {
+		t.Errorf("RedirectURL = %q", cfg.RedirectURL)
+	}
+	if cfg.OrganizationID != "org-new" {
+		t.Errorf("OrganizationID = %q", cfg.OrganizationID)
+	}
+	if cfg.OrganizationName != "NewOrg" {
+		t.Errorf("OrganizationName = %q", cfg.OrganizationName)
+	}
+	if cfg.LegionBaseURL != server.URL {
+		t.Errorf("LegionBaseURL = %q, want %q", cfg.LegionBaseURL, server.URL)
+	}
+}
