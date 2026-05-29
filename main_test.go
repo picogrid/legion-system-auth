@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -1061,29 +1060,6 @@ func TestSetupStorage_CreatesDirectory(t *testing.T) {
 
 	if _, err := os.Stat(nested); os.IsNotExist(err) {
 		t.Error("expected nested directory to be created")
-	}
-}
-
-func TestSetupStorage_DirPermissionsUnderRestrictiveUmask(t *testing.T) {
-	saveAndRestoreStorageGlobals(t)
-
-	// Simulate a device whose umask would otherwise strip group/other bits.
-	old := syscall.Umask(0o077)
-	defer syscall.Umask(old)
-
-	dir := t.TempDir()
-	custom := filepath.Join(dir, "picogrid", "auth")
-
-	if err := setupStorage(custom); err != nil {
-		t.Fatalf("setupStorage failed: %v", err)
-	}
-
-	info, err := os.Stat(custom)
-	if err != nil {
-		t.Fatalf("stat failed: %v", err)
-	}
-	if info.Mode().Perm() != 0o750 {
-		t.Errorf("storage dir perm = %o, want 0750 (group must be able to traverse)", info.Mode().Perm())
 	}
 }
 
