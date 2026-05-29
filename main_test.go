@@ -1196,6 +1196,48 @@ func TestApplySetupEnvDefaults_RemoveOld(t *testing.T) {
 	}
 }
 
+func TestDeleteEntity_SendsDeleteWithOrgHeader(t *testing.T) {
+	var gotMethod, gotPath, gotOrg, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotOrg = r.Header.Get("X-ORG-ID")
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	useHTTPClient(t, server.Client())
+
+	if err := deleteEntity(server.URL, "old-org", "user-token", "ent-123"); err != nil {
+		t.Fatalf("deleteEntity: %v", err)
+	}
+	if gotMethod != "DELETE" {
+		t.Errorf("method = %q, want DELETE", gotMethod)
+	}
+	if gotPath != "/v3/entities/ent-123" {
+		t.Errorf("path = %q, want /v3/entities/ent-123", gotPath)
+	}
+	if gotOrg != "old-org" {
+		t.Errorf("X-ORG-ID = %q, want old-org", gotOrg)
+	}
+	if gotAuth != "Bearer user-token" {
+		t.Errorf("Authorization = %q, want Bearer user-token", gotAuth)
+	}
+}
+
+func TestDeleteEntity_ReturnsErrorOnFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("forbidden"))
+	}))
+	defer server.Close()
+	useHTTPClient(t, server.Client())
+
+	if err := deleteEntity(server.URL, "old-org", "user-token", "ent-123"); err == nil {
+		t.Fatal("expected error on 403, got nil")
+	}
+}
+
 func TestResolveIntegration_CreatesAndReturnsConfig(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || r.URL.Path != "/v3/integrations" {

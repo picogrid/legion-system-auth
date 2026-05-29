@@ -1968,6 +1968,17 @@ func fetchEntityByID(apiURL, orgID, token, id string) (map[string]interface{}, e
 	return entity, nil
 }
 
+// deleteEntity removes an entity from the given organization. Used by switch-org
+// to clean up the terminal entity left behind in the previous org. The caller's
+// token must be authorized for orgID (a user token works across orgs via the
+// X-ORG-ID header). Assumes DELETE /v3/entities/{id}; adjust if the platform
+// uses a different deletion route/semantics.
+func deleteEntity(apiURL, orgID, token, entityID string) error {
+	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
+	_, err := makeRequest("DELETE", fmt.Sprintf("%s/v3/entities/%s", apiURL, url.PathEscape(entityID)), nil, headers)
+	return err
+}
+
 func fetchEntityBySerialNumber(apiURL, orgID, token, serialNumber string) (map[string]interface{}, error) {
 	headers := map[string]string{"Authorization": "Bearer " + token, "X-ORG-ID": orgID}
 	target := strings.ToLower(serialNumber)
