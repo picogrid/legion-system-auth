@@ -232,6 +232,7 @@ type setupOpts struct {
 	EntityType      string
 	CreateEntity    bool
 	NonInteractive  bool
+	RemoveOld       bool // switch-org: delete the old org's terminal entity
 }
 
 // setupFlagResult holds the parsed setup flags, separating storage-path
@@ -259,6 +260,24 @@ func registerSetupFlags(fs *flag.FlagSet) *setupFlagResult {
 	fs.StringVar(&r.Opts.EntityType, "entity-type", "", "Terminal type: lander/helios/portal/dev-unit")
 	fs.BoolVar(&r.Opts.CreateEntity, "create-entity", false, "Create terminal entity during setup")
 	fs.BoolVar(&r.Opts.NonInteractive, "non-interactive", false, "Run without prompts, use flags and defaults")
+	return r
+}
+
+// registerSwitchOrgFlags registers the flags for the switch-org sub-command.
+// It reuses setupFlagResult/setupOpts so switch-org can share setup's helpers
+// (authentication, integration resolution, terminal creation). --api-url is
+// optional here; it defaults to the LegionBaseURL in the existing config.
+func registerSwitchOrgFlags(fs *flag.FlagSet) *setupFlagResult {
+	r := &setupFlagResult{}
+	fs.StringVar(&r.StoragePath, "storage-path", "", "Custom storage path")
+	fs.StringVar(&r.Opts.APIURL, "api-url", "", "Legion API URL (default: stored value)")
+	fs.StringVar(&r.Opts.Username, "username", "", "Username for authentication")
+	fs.StringVar(&r.Opts.Password, "password", "", "Password for authentication")
+	fs.StringVar(&r.Opts.OrgID, "org-id", "", "Target organization ID (skips org selector)")
+	fs.StringVar(&r.Opts.EntityName, "entity-name", "", "Terminal entity name / serial number (default: reuse current)")
+	fs.StringVar(&r.Opts.EntityType, "entity-type", "", "Terminal type: lander/helios/portal/dev-unit (default: reuse current)")
+	fs.BoolVar(&r.Opts.RemoveOld, "remove-old", false, "Delete the terminal entity from the previous org")
+	fs.BoolVar(&r.Opts.NonInteractive, "non-interactive", false, "Run without prompts, use flags")
 	return r
 }
 
@@ -312,6 +331,7 @@ func applySetupEnvDefaults(r *setupFlagResult) {
 	envStr(&r.Opts.EntityType, "LEGION_AUTH_ENTITY_TYPE")
 	envBool(&r.Opts.CreateEntity, "LEGION_AUTH_CREATE_ENTITY")
 	envBool(&r.Opts.NonInteractive, "LEGION_AUTH_NON_INTERACTIVE")
+	envBool(&r.Opts.RemoveOld, "LEGION_AUTH_REMOVE_OLD")
 }
 
 // HTTPError represents an HTTP error response with status code

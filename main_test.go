@@ -1126,3 +1126,68 @@ func TestManifest_JSONOmitsEmptyScopes(t *testing.T) {
 		t.Error("expected scopes to be omitted when nil")
 	}
 }
+
+func TestSwitchOrgFlags_AllFlags(t *testing.T) {
+	fs := flag.NewFlagSet("switch-org", flag.ContinueOnError)
+	r := registerSwitchOrgFlags(fs)
+
+	args := []string{
+		"--storage-path", "/tmp/custom",
+		"--api-url", "https://legion.example.com",
+		"--username", "admin",
+		"--password", "s3cret",
+		"--org-id", "org-999",
+		"--entity-name", "SN-7",
+		"--entity-type", "lander",
+		"--remove-old",
+		"--non-interactive",
+	}
+	if err := fs.Parse(args); err != nil {
+		t.Fatalf("failed to parse flags: %v", err)
+	}
+
+	o := r.Opts
+	if r.StoragePath != "/tmp/custom" {
+		t.Errorf("StoragePath = %q, want %q", r.StoragePath, "/tmp/custom")
+	}
+	if o.APIURL != "https://legion.example.com" {
+		t.Errorf("APIURL = %q", o.APIURL)
+	}
+	if o.Username != "admin" {
+		t.Errorf("Username = %q", o.Username)
+	}
+	if o.Password != "s3cret" {
+		t.Errorf("Password = %q", o.Password)
+	}
+	if o.OrgID != "org-999" {
+		t.Errorf("OrgID = %q", o.OrgID)
+	}
+	if o.EntityName != "SN-7" {
+		t.Errorf("EntityName = %q", o.EntityName)
+	}
+	if o.EntityType != "lander" {
+		t.Errorf("EntityType = %q", o.EntityType)
+	}
+	if !o.RemoveOld {
+		t.Error("RemoveOld should be true")
+	}
+	if !o.NonInteractive {
+		t.Error("NonInteractive should be true")
+	}
+}
+
+func TestApplySetupEnvDefaults_RemoveOld(t *testing.T) {
+	setEnvForTest(t, "LEGION_AUTH_REMOVE_OLD", "true")
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	r := registerSwitchOrgFlags(fs)
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatal(err)
+	}
+
+	applySetupEnvDefaults(r)
+
+	if !r.Opts.RemoveOld {
+		t.Error("RemoveOld should be true from LEGION_AUTH_REMOVE_OLD env")
+	}
+}
