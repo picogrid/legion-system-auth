@@ -1919,6 +1919,195 @@ func loadCurrentContext() (*switchContext, error) {
 	return ctx, nil
 }
 
+// switchOrg re-provisions the device into a new organization. It re-authenticates
+// the user (org-agnostic token), provisions an integration + OAuth tokens in the
+// target org, reuses the device's serial/type for the new-org terminal, and
+// finally (best-effort) deletes the terminal left behind in the old org.
+func switchOrg(opts setupOpts) error {
+	ctx, err := loadCurrentContext()
+	if err != nil {
+		return err
+	}
+
+	// Non-interactive validation. --api-url is optional (defaults to stored value).
+	if opts.NonInteractive {
+		var missing []string
+		if opts.OrgID == "" {
+			missing = append(missing, "--org-id")
+		}
+		if opts.Username == "" {
+			missing = append(missing, "--username")
+		}
+		if opts.Password == "" {
+			missing = append(missing, "--password")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("--non-interactive requires flags: %s", strings.Join(missing, ", "))
+		}
+	}
+
+	// Validate --entity-type early if provided.
+	if opts.EntityType != "" {
+		valid := false
+		for _, t := range validEntityTypes {
+			if t == opts.EntityType {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("unknown entity type %q, must be one of: %s", opts.EntityType, strings.Join(validEntityTypes, ", "))
+		}
+	}
+
+	// Early no-op guard when the target org is specified up front.
+	if opts.OrgID != "" && opts.OrgID == ctx.OrgID {
+		printSuccess(fmt.Sprintf("Already configured for organization %s (%s). Nothing to do.", ctx.OrgName, ctx.OrgID))
+		return nil
+	}
+
+	apiURL := opts.APIURL
+	if apiURL == "" {
+		apiURL = ctx.APIURL
+	}
+	if apiURL == "" {
+		return fmt.Errorf("no Legion API URL available (pass --api-url)")
+	}
+
+	oauthCfg := getWellKnownConfig(apiURL, opts.NonInteractive)
+
+	// Authenticate the user (token is org-agnostic; org is chosen per request).
+	var username string
+	if opts.Username != "" {
+		username = opts.Username
+	} else {
+		printInfo("\nEnter Credentials")
+		username = inputPrompt("Username: ")
+	}
+
+	var token string
+	if opts.Username != "" && opts.Password != "" {
+		token, err = authenticateUser(oauthCfg.TokenEndpoint, username, opts.Password)
+		if err != nil {
+			return fmt.Errorf("auth failed: %w", err)
+		}
+	} else {
+		for {
+			password := readPasswordSimple("Password: ")
+			token, err = authenticateUser(oauthCfg.TokenEndpoint, username, password)
+			if err == nil {
+				break
+			}
+			printError(fmt.Sprintf("Auth failed: %v", err))
+			printInfo("Please try again (Ctrl+C to abort)")
+		}
+	}
+	printSuccess("Authenticated!")
+
+	// Resolve the target organization.
+	var newOrg Organization
+	if opts.OrgID != "" {
+		newOrg, err = getOrganization(apiURL, token, opts.OrgID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch organization %q: %w", opts.OrgID, err)
+		}
+		printSuccess(fmt.Sprintf("Switching to organization: %s (%s)", newOrg.OrganizationName, newOrg.OrganizationID))
+	} else {
+		newOrg, err = selectOrganization(apiURL, token)
+		if err != nil {
+			return err
+		}
+	}
+
+	if newOrg.OrganizationID == ctx.OrgID {
+		printSuccess(fmt.Sprintf("Already configured for organization %s (%s). Nothing to do.", ctx.OrgName, ctx.OrgID))
+		return nil
+	}
+
+	// Provision the integration in the new org, reusing the existing manifest.
+	manifest := ctx.Manifest
+	if manifest.Name == "" {
+		manifest = createManifestInteractively(opts)
+	}
+
+	printInfo("\nProvisioning integration in new organization...")
+	cfg, err := resolveIntegration(apiURL, token, newOrg, manifest, opts.NonInteractive)
+	if err != nil {
+		return err
+	}
+	config := *cfg
+
+	if err := saveJSON(ConfigFile, config); err != nil {
+		return fmt.Errorf("critical: failed to save configuration: %w", err)
+	}
+
+	// Seed the access token file with the user token for the headless OAuth flow.
+	if err := saveJSON(AccessTokenFile, StoredToken{
+		AccessToken:    token,
+		ExpiresAt:      time.Now().Add(1 * time.Hour).Format(time.RFC3339),
+		OrganizationID: newOrg.OrganizationID,
+	}); err != nil {
+		return fmt.Errorf("failed to save access token: %w", err)
+	}
+
+	if performHeadlessOAuthFlow(config, token) {
+		content, err := os.ReadFile(AccessTokenFile)
+		if err != nil {
+			return fmt.Errorf("failed to read access token file: %w", err)
+		}
+		var t StoredToken
+		if err := json.Unmarshal(content, &t); err != nil {
+			return fmt.Errorf("failed to unmarshal access token from %s: %w", AccessTokenFile, err)
+		}
+		config.AccessToken = t.AccessToken
+		if err := saveJSON(ConfigFile, config); err != nil {
+			printError(fmt.Sprintf("Failed to update config with bridge token: %v", err))
+		}
+	}
+
+	// Provision the terminal in the new org, reusing the device's identity.
+	if opts.EntityName == "" {
+		opts.EntityName = ctx.Serial
+	}
+	if opts.EntityType == "" {
+		opts.EntityType = ctx.Type
+	}
+	// Clear the cached entity so createTerminalEntity resolves freshly by serial
+	// number within the new org (reuse if present, create if absent).
+	_ = os.Remove(TerminalEntityFile)
+
+	entityToken := config.AccessToken
+	if entityToken == "" {
+		entityToken = token
+		printWarning("Headless OAuth token unavailable; using initial user token for entity creation.")
+	}
+	createTerminalEntity(apiURL, newOrg.OrganizationID, config.IntegrationID, entityToken, opts)
+
+	// Old-org cleanup, performed last and best-effort so a failure never leaves
+	// the device stranded between orgs.
+	if ctx.EntityID != "" && ctx.OrgID != "" && ctx.OrgID != newOrg.OrganizationID {
+		removeOld := opts.RemoveOld
+		if !opts.NonInteractive {
+			choice := strings.ToLower(strings.TrimSpace(inputPrompt(fmt.Sprintf(
+				"Delete the terminal entity from the previous org %s? (y/N): ", ctx.OrgName))))
+			removeOld = choice == "y" || choice == "yes"
+		}
+		if removeOld {
+			printInfo(fmt.Sprintf("Removing terminal entity %s from previous org %s...", ctx.EntityID, ctx.OrgName))
+			if err := deleteEntity(apiURL, ctx.OrgID, token, ctx.EntityID); err != nil {
+				printWarning(fmt.Sprintf("Failed to delete old terminal entity (continuing): %v", err))
+			} else {
+				printSuccess("Removed terminal entity from previous org.")
+			}
+		} else {
+			printInfo("Leaving the previous org's terminal entity in place.")
+		}
+	}
+
+	printSuccess(fmt.Sprintf("Switched to organization %s (%s).", newOrg.OrganizationName, newOrg.OrganizationID))
+	return nil
+}
+
 var errEntityNotFound = errors.New("entity not found")
 
 func entityIDFromMap(entity map[string]interface{}) string {

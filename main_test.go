@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -1381,5 +1382,52 @@ func TestLoadCurrentContext_NoEntityFileStillOK(t *testing.T) {
 	}
 	if ctx.EntityID != "" {
 		t.Errorf("EntityID = %q, want empty", ctx.EntityID)
+	}
+}
+
+func TestSwitchOrg_NonInteractiveRequiresFlags(t *testing.T) {
+	saveAndRestoreStorageGlobals(t)
+	dir := t.TempDir()
+	ConfigFile = filepath.Join(dir, "oauth_config.json")
+	TerminalEntityFile = filepath.Join(dir, "terminal_entity.json")
+	cfg := AppConfig{OrganizationID: "org-old", LegionBaseURL: "https://legion.example.com"}
+	data, _ := json.Marshal(cfg)
+	writeFile(t, ConfigFile, data)
+
+	// Missing --password.
+	err := switchOrg(setupOpts{NonInteractive: true, OrgID: "org-new", Username: "u"})
+	if err == nil {
+		t.Fatal("expected error for missing flags")
+	}
+	if !strings.Contains(err.Error(), "--password") {
+		t.Errorf("error = %v, want it to mention --password", err)
+	}
+}
+
+func TestSwitchOrg_SameOrgIsNoop(t *testing.T) {
+	saveAndRestoreStorageGlobals(t)
+	dir := t.TempDir()
+	ConfigFile = filepath.Join(dir, "oauth_config.json")
+	TerminalEntityFile = filepath.Join(dir, "terminal_entity.json")
+	cfg := AppConfig{OrganizationID: "org-old", OrganizationName: "OldOrg", LegionBaseURL: "https://legion.example.com"}
+	data, _ := json.Marshal(cfg)
+	writeFile(t, ConfigFile, data)
+
+	// Target equals current org → early no-op, no network, no error.
+	err := switchOrg(setupOpts{NonInteractive: true, OrgID: "org-old", Username: "u", Password: "p"})
+	if err != nil {
+		t.Fatalf("expected no-op success, got %v", err)
+	}
+}
+
+func TestSwitchOrg_MissingConfigErrors(t *testing.T) {
+	saveAndRestoreStorageGlobals(t)
+	dir := t.TempDir()
+	ConfigFile = filepath.Join(dir, "missing.json")
+	TerminalEntityFile = filepath.Join(dir, "terminal_entity.json")
+
+	err := switchOrg(setupOpts{NonInteractive: true, OrgID: "org-new", Username: "u", Password: "p"})
+	if err == nil {
+		t.Fatal("expected error when no existing config")
 	}
 }
