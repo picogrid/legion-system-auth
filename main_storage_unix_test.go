@@ -27,6 +27,9 @@ func TestSetupStorage_DirPermissionsUnderRestrictiveUmask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat failed: %v", err)
 	}
+	// Assumes no "pg" user on the host: when pg exists, setOwnership bumps the
+	// dir to 0755 (still group-traversable). CI/dev machines have no pg user, so
+	// the unconditional 0750 from setupStorage stands.
 	if info.Mode().Perm() != 0o750 {
 		t.Errorf("storage dir perm = %o, want 0750 (group must be able to traverse)", info.Mode().Perm())
 	}
