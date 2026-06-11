@@ -1315,6 +1315,27 @@ type OAuthResult struct {
 	ErrorDescription string
 }
 
+// otelIngestScope is the Keycloak client scope whose audience mapper
+// stamps the otel-ingest audience that the ops observability OTLP
+// endpoint validator pins (DEV-530). Every device ships telemetry, so
+// the agent requests the scope unconditionally instead of relying on
+// each integration manifest to opt in; realms that do not define the
+// scope simply ignore it.
+const otelIngestScope = "otel-ingest"
+
+// buildAuthScopes joins the manifest scopes for the authorize request
+// and guarantees the otel-ingest scope is present exactly once, so
+// refreshed tokens keep carrying the otel-ingest audience for the
+// telemetry endpoint.
+func buildAuthScopes(manifestScopes []string) string {
+	for _, s := range manifestScopes {
+		if s == otelIngestScope {
+			return strings.Join(manifestScopes, " ")
+		}
+	}
+	return strings.Join(append(append([]string{}, manifestScopes...), otelIngestScope), " ")
+}
+
 func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 	printInfo("\n→ Starting headless OAuth flow...")
 
@@ -1377,7 +1398,7 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 	}
 
 	// 3. Construct Auth URL
-	scopes := strings.Join(config.Manifest.OAuthConfig.Scopes, " ")
+	scopes := buildAuthScopes(config.Manifest.OAuthConfig.Scopes)
 	params := url.Values{}
 	params.Set("client_id", config.ClientID)
 	params.Set("redirect_uri", config.RedirectURL)
