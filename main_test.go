@@ -1111,3 +1111,26 @@ func TestManifest_JSONOmitsEmptyScopes(t *testing.T) {
 		t.Error("expected scopes to be omitted when nil")
 	}
 }
+
+func TestBuildAuthScopes(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"appends otel-ingest when absent", []string{"global:::basic", "global:::profile"}, "global:::basic global:::profile otel-ingest"},
+		{"does not duplicate otel-ingest", []string{"global:::basic", "otel-ingest"}, "global:::basic otel-ingest"},
+		{"empty manifest scopes still request otel-ingest", nil, "otel-ingest"},
+	}
+	for _, tc := range cases {
+		if got := buildAuthScopes(tc.in); got != tc.want {
+			t.Errorf("%s: buildAuthScopes(%v) = %q, want %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+
+	in := []string{"global:::basic"}
+	_ = buildAuthScopes(in)
+	if len(in) != 1 || in[0] != "global:::basic" {
+		t.Errorf("buildAuthScopes mutated the caller's slice: %v", in)
+	}
+}
