@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -6,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Picogrid Edge (Yocto) image layout. The image bakes legion-auth at
@@ -49,9 +52,11 @@ func installPicogridOSBinary() (string, error) {
 	}
 	src, _ = filepath.Abs(src)
 
-	if src == picogridOSBakedBinary {
+	if same, err := sameFile(src, picogridOSBakedBinary); err != nil {
+		return "", err
+	} else if same {
 		// Running the image-baked binary: nothing newer to drop.
-		return src, nil
+		return picogridOSBakedBinary, nil
 	}
 
 	if _, err := os.Stat(picogridOSLauncher); err != nil {
@@ -59,7 +64,9 @@ func installPicogridOSBinary() (string, error) {
 	}
 
 	dest := filepath.Join(picogridOSBinaryDir, "legion-auth")
-	if src == dest {
+	if same, err := sameFile(src, dest); err != nil {
+		return "", err
+	} else if same {
 		return dest, nil
 	}
 
@@ -71,6 +78,26 @@ func installPicogridOSBinary() (string, error) {
 		return "", err
 	}
 	return dest, nil
+}
+
+func sameFile(pathA, pathB string) (bool, error) {
+	infoA, err := os.Stat(pathA)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to stat %s: %w", pathA, err)
+	}
+
+	infoB, err := os.Stat(pathB)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to stat %s: %w", pathB, err)
+	}
+
+	return os.SameFile(infoA, infoB), nil
 }
 
 // installBinaryFile copies src to dest atomically: a temp file in the same
@@ -129,12 +156,14 @@ func activatePicogridOSService() error {
 	}
 
 	printInfo("Reloading systemd daemon...")
-	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
-		return fmt.Errorf("failed to reload the systemd daemon: %w", err)
+	output, err := exec.Command("systemctl", "daemon-reload").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to reload the systemd daemon: %w; output: %s", err, strings.TrimSpace(string(output)))
 	}
 	printInfo(fmt.Sprintf("Restarting %s service...", picogridOSServiceName))
-	if err := exec.Command("systemctl", "restart", picogridOSServiceName).Run(); err != nil {
-		return fmt.Errorf("failed to restart %s (run as root?): %w", picogridOSServiceName, err)
+	output, err = exec.Command("systemctl", "restart", picogridOSServiceName).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to restart %s (run as root?): %w; output: %s", picogridOSServiceName, err, strings.TrimSpace(string(output)))
 	}
 	printSuccess("Service restarted using the image-provided unit")
 	return nil
