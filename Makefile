@@ -11,7 +11,7 @@ all: build
 
 ## build: Build the binary
 build:
-	go build $(LDFLAGS) -o $(BINARY_NAME) main.go
+	go build $(LDFLAGS) -o $(BINARY_NAME) .
 
 ## clean: Remove build artifacts
 clean:

@@ -102,7 +102,7 @@ jobs:
 
         go build -v \
           -ldflags "-X main.Version=$VERSION -X main.GitCommit=$GIT_COMMIT -X main.BuildDate=$BUILD_DATE" \
-          -o build/${{ matrix.output_name }} main.go
+          -o build/${{ matrix.output_name }} .
 
     - name: Generate SHA256 Checksum
       run: |
