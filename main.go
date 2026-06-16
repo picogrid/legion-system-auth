@@ -2302,6 +2302,18 @@ func main() {
 			fmt.Printf("OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 			return
 
+		case "picogrid-os-install":
+			// Install the running binary into the Picogrid Edge auto-update
+			// drop dir (/var/lib/picogrid/bin) where legion-auth-launch runs it
+			// when it is newer than the baked /usr/bin/legion-auth. This is the
+			// Picogrid-OS install path; the generic /usr/local/bin install in
+			// install.sh is ignored by the launcher.
+			if err := runPicogridOSInstall(); err != nil {
+				printError(err.Error())
+				os.Exit(1)
+			}
+			return
+
 		case "setup":
 
 			if err := setupCmd.Parse(os.Args[2:]); err != nil {

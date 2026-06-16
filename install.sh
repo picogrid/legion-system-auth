@@ -154,17 +154,36 @@ for attempt in $(seq 1 $MAX_RETRIES); do
     fi
 done
 
-# Install (rename to generic binary name during installation)
+# Install. On Picogrid OS the auto-update contract owns the install location:
+# legion-auth-launch only ever runs the baked /usr/bin/legion-auth or a
+# strictly-newer copy in /var/lib/picogrid/bin -- a binary in /usr/local/bin is
+# ignored there. So when the launcher is present, route through the binary's own
+# picogrid-os-install mode (which drops to /var/lib/picogrid/bin and restarts
+# the image-provided service). Everywhere else, the generic /usr/local/bin
+# install (now mkdir -p'd so a minimal image without /usr/local/bin still works).
 echo ""
-echo "$ARROW Installing to $INSTALL_DIR..."
+chmod +x "$TMP_DIR/$ASSET_NAME"
 
-if [ -w "$INSTALL_DIR" ]; then
-    mv "$TMP_DIR/$ASSET_NAME" "$INSTALL_DIR/$BINARY_NAME"
-    chmod +x "$INSTALL_DIR/$BINARY_NAME"
+if [ -x /usr/bin/legion-auth-launch ]; then
+    echo "$ARROW Picogrid OS detected — installing via the auto-update contract..."
+    if [ "$(id -u)" -eq 0 ]; then
+        "$TMP_DIR/$ASSET_NAME" picogrid-os-install
+    else
+        echo "  🔑 Sudo permissions required"
+        sudo "$TMP_DIR/$ASSET_NAME" picogrid-os-install
+    fi
 else
-    echo "  🔑 Sudo permissions required"
-    sudo mv "$TMP_DIR/$ASSET_NAME" "$INSTALL_DIR/$BINARY_NAME"
-    sudo chmod +x "$INSTALL_DIR/$BINARY_NAME"
+    echo "$ARROW Installing to $INSTALL_DIR..."
+    if [ -w "$INSTALL_DIR" ]; then
+        mkdir -p "$INSTALL_DIR"
+        mv "$TMP_DIR/$ASSET_NAME" "$INSTALL_DIR/$BINARY_NAME"
+        chmod +x "$INSTALL_DIR/$BINARY_NAME"
+    else
+        echo "  🔑 Sudo permissions required"
+        sudo mkdir -p "$INSTALL_DIR"
+        sudo mv "$TMP_DIR/$ASSET_NAME" "$INSTALL_DIR/$BINARY_NAME"
+        sudo chmod +x "$INSTALL_DIR/$BINARY_NAME"
+    fi
 fi
 
 echo ""
