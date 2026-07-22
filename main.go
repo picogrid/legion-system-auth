@@ -647,7 +647,6 @@ func ensureRedirectUriAvailable(redirectURI string) string {
 func selectLegionEnvironment() string {
 	envs := []struct{ Name, URL string }{
 		{"Commercial", "https://legion-prod.picogrid.com"},
-		{"US Gov", "https://api.usg.legion.picogrid.com"},
 		{"Local", "http://localhost:9876"},
 		{"Other", ""},
 	}
