@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -156,7 +155,7 @@ type Integration struct {
 type IntOAuthCfg struct {
 	ClientID     string   `json:"client_id"`
 	ClientSecret string   `json:"client_secret,omitempty"`
-	RedirectURLs []string `json:"redirect_urls"`
+	RedirectURLs []string `json:"redirect_uris"`
 	Scopes       []string `json:"scopes"`
 }
 
@@ -609,37 +608,6 @@ func setOwnership(path string) {
 	logger.Info("set ownership to pg user", slog.String("path", path))
 }
 
-func ensureRedirectUriAvailable(redirectURI string) string {
-	parsed, err := url.Parse(redirectURI)
-	if err != nil {
-		return redirectURI
-	}
-
-	host := parsed.Hostname()
-	port := parsed.Port()
-	if port == "" {
-		port = "80"
-	}
-
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), time.Second)
-	if err == nil {
-		_ = conn.Close()
-		// Port in use, find random
-		listener, err := net.Listen("tcp", ":0")
-		if err != nil {
-			return redirectURI
-		}
-		defer func() { _ = listener.Close() }()
-		port = strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
-
-		parsed.Host = net.JoinHostPort(host, port)
-		newURI := parsed.String()
-		logger.Info("port in use, switching redirect URI", slog.String("new_uri", newURI))
-		return newURI
-	}
-	return redirectURI
-}
-
 // ============================================================================
 // Interactive Setup
 // ============================================================================
@@ -957,8 +925,6 @@ func createManifestInteractively(opts setupOpts) Manifest {
 			redirect = defaultRedirect
 		}
 	}
-
-	redirect = ensureRedirectUriAvailable(redirect)
 
 	var permissions []PermissionRequest
 	var scopes []string
@@ -1308,75 +1274,22 @@ func regenerateClientSecret(apiURL, token, orgID, integID string) (string, error
 // OAuth Server & Flow
 // ============================================================================
 
-type OAuthResult struct {
-	Code             string
-	State            string
-	Error            string
-	ErrorDescription string
-}
-
-func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
+// performHeadlessOAuthFlow authorizes the integration and returns its saved access token.
+func performHeadlessOAuthFlow(config AppConfig, userToken string) (string, bool) {
 	printInfo("\n→ Starting headless OAuth flow...")
 
-	// 1. Start Local Server
-	redirectURL, _ := url.Parse(config.RedirectURL)
-	port := redirectURL.Port()
-	if port == "" {
-		port = "80"
-	}
-
-	mux := http.NewServeMux()
-	resultChan := make(chan OAuthResult, 1)
-
-	mux.HandleFunc(redirectURL.Path, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		res := OAuthResult{
-			Code:             q.Get("code"),
-			State:            q.Get("state"),
-			Error:            q.Get("error"),
-			ErrorDescription: q.Get("error_description"),
-		}
-		resultChan <- res
-
-		msg := "<h1>✅ OAuth Authorization Successful</h1><p>You can close this window.</p>"
-		if res.Error != "" {
-			msg = fmt.Sprintf("<h1>❌ Failed</h1><p>%s: %s</p>", res.Error, res.ErrorDescription)
-		}
-		_, _ = w.Write([]byte(msg))
-	})
-
-	server := &http.Server{
-		Addr:    "127.0.0.1:" + port,
-		Handler: mux,
-	}
-
-	go func() {
-		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			logger.Error("OAuth callback server error", slog.String("error", err.Error()))
-		}
-	}()
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
-			logger.Warn("OAuth callback server shutdown error", slog.String("error", err.Error()))
-		}
-	}()
-
-	// 2. Prepare PKCE
 	verifier, err := generateCodeVerifier()
 	if err != nil {
 		printError(fmt.Sprintf("Failed to generate code verifier: %v", err))
-		return false
+		return "", false
 	}
 	challenge := generateCodeChallenge(verifier)
 	state, err := generateState()
 	if err != nil {
 		printError(fmt.Sprintf("Failed to generate state: %v", err))
-		return false
+		return "", false
 	}
 
-	// 3. Construct Auth URL
 	scopes := strings.Join(config.Manifest.OAuthConfig.Scopes, " ")
 	params := url.Values{}
 	params.Set("client_id", config.ClientID)
@@ -1389,53 +1302,56 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 
 	authURL := fmt.Sprintf("%s/v3/integrations/oauth/authorize?%s", config.LegionBaseURL, params.Encode())
 
-	// 4. Make Request with User Token (Headless trigger)
 	printInfo("→ Making authorization request...")
 
 	req, err := http.NewRequest("GET", authURL, nil)
 	if err != nil {
 		printError(fmt.Sprintf("Failed to create auth request: %v", err))
-		return false
+		return "", false
 	}
 	req.Header.Set("Authorization", "Bearer "+userToken)
 	req.Header.Set("X-ORG-ID", config.OrganizationID)
 
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// Allow redirects
-			return nil
-		},
+	// Read the code from Legion's redirect instead of serving the redirect
+	// URI, whose port may belong to another local service.
+	client := *httpClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
-
-	// This request will follow the redirect to localhost, which hits our server above
 	resp, err := client.Do(req)
 	if err != nil {
-		// It might fail if the client can't connect to localhost (e.g. invalid certs or something),
-		// but typically it succeeds or at least the server gets hit.
-		logger.Debug("auth request finished", slog.String("error", err.Error()))
-	} else {
-		_ = resp.Body.Close()
+		printError(fmt.Sprintf("Authorization request failed: %v", err))
+		return "", false
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	location, err := resp.Location()
+	if err != nil {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		printError(fmt.Sprintf("Authorization returned %s instead of a redirect (redirect_uri %s): %s",
+			resp.Status, config.RedirectURL, strings.TrimSpace(string(body))))
+		return "", false
 	}
 
-	// 5. Wait for result
-	select {
-	case res := <-resultChan:
-		if res.Error != "" {
-			printError(fmt.Sprintf("OAuth error: %s", res.Error))
-			return false
-		}
-		if res.State != state {
-			printError("State mismatch!")
-			return false
-		}
-		return exchangeCodeForTokens(config, res.Code, verifier)
-	case <-time.After(30 * time.Second):
-		printError("Timeout waiting for OAuth callback")
-		return false
+	target := fmt.Sprintf("%s://%s%s", location.Scheme, location.Host, location.Path)
+	q := location.Query()
+	if oauthErr := q.Get("error"); oauthErr != "" {
+		printError(fmt.Sprintf("OAuth error: %s: %s", oauthErr, q.Get("error_description")))
+		return "", false
 	}
+	if q.Get("state") != state {
+		printError(fmt.Sprintf("State mismatch in redirect to %s", target))
+		return "", false
+	}
+	code := q.Get("code")
+	if code == "" {
+		printError(fmt.Sprintf("Redirect to %s carries no authorization code", target))
+		return "", false
+	}
+	return exchangeCodeForTokens(config, code, verifier)
 }
 
-func exchangeCodeForTokens(config AppConfig, code, verifier string) bool {
+func exchangeCodeForTokens(config AppConfig, code, verifier string) (string, bool) {
 	printInfo("→ Exchanging code for tokens...")
 
 	data := url.Values{}
@@ -1458,7 +1374,7 @@ func exchangeCodeForTokens(config AppConfig, code, verifier string) bool {
 
 	if err := makeRequestJSON("POST", urlStr, data, headers, &resp); err != nil {
 		printError(fmt.Sprintf("Token exchange failed: %v", err))
-		return false
+		return "", false
 	}
 
 	expiresAt := time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
@@ -1474,7 +1390,7 @@ func exchangeCodeForTokens(config AppConfig, code, verifier string) bool {
 
 	if err := saveJSON(AccessTokenFile, tokenData); err != nil {
 		printError(fmt.Sprintf("Failed to save access token: %v", err))
-		return false
+		return "", false
 	}
 
 	if resp.RefreshToken != "" {
@@ -1487,7 +1403,7 @@ func exchangeCodeForTokens(config AppConfig, code, verifier string) bool {
 	}
 
 	printSuccess("OAuth flow complete!")
-	return true
+	return resp.AccessToken, true
 }
 func saveJSON(path string, data interface{}) error {
 	file, err := json.MarshalIndent(data, "", "  ")
@@ -1762,12 +1678,18 @@ func interactiveSetup(opts setupOpts) error {
 		}
 	}
 
+	// Legion fixes redirect URIs when an integration is created, so a reused
+	// integration must authorize with its registered URI, not this run's input.
+	registered, err := getIntegrationOAuthConfig(apiURL, token, org.OrganizationID, integ.ID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch integration OAuth config: %w", err)
+	}
+	if len(registered.RedirectURLs) == 0 {
+		return fmt.Errorf("integration %s has no registered redirect URI", integ.ID)
+	}
 	if clientID == "" {
-		cfg, err := getIntegrationOAuthConfig(apiURL, token, org.OrganizationID, integ.ID)
-		if err == nil {
-			clientID = cfg.ClientID
-			clientSecret = cfg.ClientSecret
-		}
+		clientID = registered.ClientID
+		clientSecret = registered.ClientSecret
 	}
 
 	if clientID != "" && (clientSecret == "" || clientSecret == "[REDACTED]") {
@@ -1778,64 +1700,30 @@ func interactiveSetup(opts setupOpts) error {
 		}
 	}
 
-	redirectURL := ""
-	if len(manifest.OAuthConfig.RedirectURLs) > 0 {
-		redirectURL = manifest.OAuthConfig.RedirectURLs[0]
-	}
-
 	config := AppConfig{
 		IntegrationID:    integ.ID,
 		ClientID:         clientID,
 		ClientSecret:     clientSecret,
-		RedirectURL:      redirectURL,
+		RedirectURL:      registered.RedirectURLs[0],
 		OrganizationID:   org.OrganizationID,
 		OrganizationName: org.OrganizationName,
 		LegionBaseURL:    apiURL,
 		Manifest:         manifest,
 	}
 
+	// Saved only after authorization, so a failed run never pairs this client
+	// with tokens left by a previous setup.
+	accessToken, ok := performHeadlessOAuthFlow(config, token)
+	if !ok {
+		return fmt.Errorf("integration authorization failed; no integration token was saved")
+	}
+	config.AccessToken = accessToken
 	if err := saveJSON(ConfigFile, config); err != nil {
 		return fmt.Errorf("critical: failed to save configuration: %w", err)
 	}
 
-	// Initial User Token Save
-	printInfo("\n→ Saving authentication token...")
-	if err := saveJSON(AccessTokenFile, StoredToken{
-		AccessToken:    token,
-		ExpiresAt:      time.Now().Add(1 * time.Hour).Format(time.RFC3339),
-		OrganizationID: org.OrganizationID,
-	}); err != nil {
-		return fmt.Errorf("failed to save access token: %w", err)
-	}
-
-	// Perform Headless
-	if performHeadlessOAuthFlow(config, token) {
-		// Update config with bridge token
-		content, err := os.ReadFile(AccessTokenFile)
-		if err != nil {
-			return fmt.Errorf("failed to read access token file: %w", err)
-		}
-		var t StoredToken
-		if err := json.Unmarshal(content, &t); err != nil {
-			return fmt.Errorf("failed to unmarshal access token from %s: %w", AccessTokenFile, err)
-		}
-		config.AccessToken = t.AccessToken
-		if err := saveJSON(ConfigFile, config); err != nil {
-			printError(fmt.Sprintf("Failed to update config with bridge token: %v", err))
-		}
-	}
-
-	// Entity creation
 	if opts.CreateEntity {
-		createEntityToken := config.AccessToken
-		if createEntityToken == "" {
-			createEntityToken = token
-			printWarning("Headless OAuth token unavailable; using initial user token for entity creation.")
-		}
-		if createEntityToken == "" {
-			return fmt.Errorf("no access token available for entity creation")
-		}
-		createTerminalEntity(apiURL, config.OrganizationID, config.IntegrationID, createEntityToken, opts)
+		createTerminalEntity(apiURL, config.OrganizationID, config.IntegrationID, config.AccessToken, opts)
 	}
 
 	return nil
