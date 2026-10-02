@@ -122,6 +122,19 @@ func TestHeadlessOAuthFlow_RejectsStateMismatch(t *testing.T) {
 	}
 }
 
+func TestHeadlessOAuthFlow_RejectsRedirectWithoutCode(t *testing.T) {
+	useTokenFiles(t)
+	server := fakeLegion(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		target := q.Get("redirect_uri") + "?" + url.Values{"state": {q.Get("state")}}.Encode()
+		http.Redirect(w, r, target, http.StatusSeeOther)
+	})
+
+	if _, ok := performHeadlessOAuthFlow(flowConfig(server.URL), "user-token"); ok {
+		t.Fatal("flow accepted a redirect without a code")
+	}
+}
+
 func TestGetIntegrationOAuthConfig_ReadsRegisteredRedirectURIs(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"client_id":"client-1","redirect_uris":["http://localhost:8000/oauth_callback"]}`))

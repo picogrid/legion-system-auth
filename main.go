@@ -1343,7 +1343,12 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) (string, bool)
 		printError(fmt.Sprintf("State mismatch in redirect to %s", target))
 		return "", false
 	}
-	return exchangeCodeForTokens(config, q.Get("code"), verifier)
+	code := q.Get("code")
+	if code == "" {
+		printError(fmt.Sprintf("Redirect to %s carries no authorization code", target))
+		return "", false
+	}
+	return exchangeCodeForTokens(config, code, verifier)
 }
 
 func exchangeCodeForTokens(config AppConfig, code, verifier string) (string, bool) {
