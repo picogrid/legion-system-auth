@@ -65,8 +65,9 @@ func TestHeadlessOAuthFlow_ReadsCodeFromRedirectWithoutListening(t *testing.T) {
 	})
 
 	// Nothing listens on the redirect URI's port; the flow must not need it.
-	if !performHeadlessOAuthFlow(flowConfig(server.URL), "user-token") {
-		t.Fatal("flow failed")
+	token, ok := performHeadlessOAuthFlow(flowConfig(server.URL), "user-token")
+	if !ok || token != "integration-access" {
+		t.Fatalf("flow = %q, %v; want integration-access, true", token, ok)
 	}
 
 	var stored StoredToken
@@ -88,7 +89,7 @@ func TestHeadlessOAuthFlow_FailsOnServerError(t *testing.T) {
 		http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
 	})
 
-	if performHeadlessOAuthFlow(flowConfig(server.URL), "user-token") {
+	if _, ok := performHeadlessOAuthFlow(flowConfig(server.URL), "user-token"); ok {
 		t.Fatal("flow succeeded on a 400 from authorize")
 	}
 	if _, err := os.Stat(AccessTokenFile); !os.IsNotExist(err) {
@@ -104,7 +105,7 @@ func TestHeadlessOAuthFlow_FailsOnRedirectedError(t *testing.T) {
 		http.Redirect(w, r, target, http.StatusSeeOther)
 	})
 
-	if performHeadlessOAuthFlow(flowConfig(server.URL), "user-token") {
+	if _, ok := performHeadlessOAuthFlow(flowConfig(server.URL), "user-token"); ok {
 		t.Fatal("flow succeeded on an OAuth error redirect")
 	}
 }
@@ -116,7 +117,7 @@ func TestHeadlessOAuthFlow_RejectsStateMismatch(t *testing.T) {
 		http.Redirect(w, r, target, http.StatusSeeOther)
 	})
 
-	if performHeadlessOAuthFlow(flowConfig(server.URL), "user-token") {
+	if _, ok := performHeadlessOAuthFlow(flowConfig(server.URL), "user-token"); ok {
 		t.Fatal("flow accepted a mismatched state")
 	}
 }

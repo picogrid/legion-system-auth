@@ -1274,19 +1274,20 @@ func regenerateClientSecret(apiURL, token, orgID, integID string) (string, error
 // OAuth Server & Flow
 // ============================================================================
 
-func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
+// performHeadlessOAuthFlow authorizes the integration and returns its saved access token.
+func performHeadlessOAuthFlow(config AppConfig, userToken string) (string, bool) {
 	printInfo("\n→ Starting headless OAuth flow...")
 
 	verifier, err := generateCodeVerifier()
 	if err != nil {
 		printError(fmt.Sprintf("Failed to generate code verifier: %v", err))
-		return false
+		return "", false
 	}
 	challenge := generateCodeChallenge(verifier)
 	state, err := generateState()
 	if err != nil {
 		printError(fmt.Sprintf("Failed to generate state: %v", err))
-		return false
+		return "", false
 	}
 
 	scopes := strings.Join(config.Manifest.OAuthConfig.Scopes, " ")
@@ -1306,7 +1307,7 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 	req, err := http.NewRequest("GET", authURL, nil)
 	if err != nil {
 		printError(fmt.Sprintf("Failed to create auth request: %v", err))
-		return false
+		return "", false
 	}
 	req.Header.Set("Authorization", "Bearer "+userToken)
 	req.Header.Set("X-ORG-ID", config.OrganizationID)
@@ -1320,7 +1321,7 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 	resp, err := client.Do(req)
 	if err != nil {
 		printError(fmt.Sprintf("Authorization request failed: %v", err))
-		return false
+		return "", false
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1329,22 +1330,23 @@ func performHeadlessOAuthFlow(config AppConfig, userToken string) bool {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		printError(fmt.Sprintf("Authorization returned %s instead of a redirect (redirect_uri %s): %s",
 			resp.Status, config.RedirectURL, strings.TrimSpace(string(body))))
-		return false
+		return "", false
 	}
 
+	target := fmt.Sprintf("%s://%s%s", location.Scheme, location.Host, location.Path)
 	q := location.Query()
 	if oauthErr := q.Get("error"); oauthErr != "" {
 		printError(fmt.Sprintf("OAuth error: %s: %s", oauthErr, q.Get("error_description")))
-		return false
+		return "", false
 	}
 	if q.Get("state") != state {
-		printError(fmt.Sprintf("State mismatch in redirect to %s://%s%s", location.Scheme, location.Host, location.Path))
-		return false
+		printError(fmt.Sprintf("State mismatch in redirect to %s", target))
+		return "", false
 	}
 	return exchangeCodeForTokens(config, q.Get("code"), verifier)
 }
 
-func exchangeCodeForTokens(config AppConfig, code, verifier string) bool {
+func exchangeCodeForTokens(config AppConfig, code, verifier string) (string, bool) {
 	printInfo("→ Exchanging code for tokens...")
 
 	data := url.Values{}
@@ -1367,7 +1369,7 @@ func exchangeCodeForTokens(config AppConfig, code, verifier string) bool {
 
 	if err := makeRequestJSON("POST", urlStr, data, headers, &resp); err != nil {
 		printError(fmt.Sprintf("Token exchange failed: %v", err))
-		return false
+		return "", false
 	}
 
 	expiresAt := time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
@@ -1383,7 +1385,7 @@ func exchangeCodeForTokens(config AppConfig, code, verifier string) bool {
 
 	if err := saveJSON(AccessTokenFile, tokenData); err != nil {
 		printError(fmt.Sprintf("Failed to save access token: %v", err))
-		return false
+		return "", false
 	}
 
 	if resp.RefreshToken != "" {
@@ -1396,7 +1398,7 @@ func exchangeCodeForTokens(config AppConfig, code, verifier string) bool {
 	}
 
 	printSuccess("OAuth flow complete!")
-	return true
+	return resp.AccessToken, true
 }
 func saveJSON(path string, data interface{}) error {
 	file, err := json.MarshalIndent(data, "", "  ")
@@ -1706,19 +1708,11 @@ func interactiveSetup(opts setupOpts) error {
 
 	// Saved only after authorization, so a failed run never pairs this client
 	// with tokens left by a previous setup.
-	if !performHeadlessOAuthFlow(config, token) {
+	accessToken, ok := performHeadlessOAuthFlow(config, token)
+	if !ok {
 		return fmt.Errorf("integration authorization failed; no integration token was saved")
 	}
-
-	content, err := os.ReadFile(AccessTokenFile)
-	if err != nil {
-		return fmt.Errorf("failed to read access token file: %w", err)
-	}
-	var t StoredToken
-	if err := json.Unmarshal(content, &t); err != nil {
-		return fmt.Errorf("failed to unmarshal access token from %s: %w", AccessTokenFile, err)
-	}
-	config.AccessToken = t.AccessToken
+	config.AccessToken = accessToken
 	if err := saveJSON(ConfigFile, config); err != nil {
 		return fmt.Errorf("critical: failed to save configuration: %w", err)
 	}
