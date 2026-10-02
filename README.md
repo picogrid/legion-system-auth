@@ -19,7 +19,7 @@ For comprehensive API details, please refer to the [Legion API Documentation](ht
 
 - **OAuth2 PKCE Flow:** Secure authentication without hardcoded credentials.
 - **Automatic Token Management:** Monitors and refreshes access tokens automatically.
-- **Headless Support:** Supports authentication flows on headless devices via local callbacks.
+- **Headless Support:** Authorizes on headless devices without a browser or a local callback listener; setup reads the authorization code from Legion's redirect to the integration's registered redirect URI, so that URI's port does not need to be free.
 - **Service Integration:** Built-in support for installing as a system service:
   - **Linux:** Systemd
   - **macOS:** Launchd
