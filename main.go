@@ -168,7 +168,7 @@ type Manifest struct {
 }
 
 type PermissionRequest struct {
-	// The resource type this permission applies to (e.g., "entity", "feed", "track", "integration")
+	// The resource type this permission applies to (e.g., "entity", "feed", "integration")
 	ResourceType string `json:"resource_type"`
 	// The relation/role being requested (e.g., "viewer", "operator", "admin")
 	Relation string `json:"relation"`
@@ -1041,9 +1041,6 @@ func selectPermissions() []PermissionRequest {
 		{"event", "viewer", "Read event information", "Event: Viewer"},
 		{"event", "operator", "Manage events", "Event: Operator"},
 		{"event", "admin", "Full event admin access", "Event: Admin"},
-		{"track", "viewer", "Read track information", "Track: Viewer"},
-		{"track", "operator", "Manage tracks", "Track: Operator"},
-		{"track", "admin", "Full track admin access", "Track: Admin"},
 	}
 
 	printInfo("Available permissions:")
@@ -1106,7 +1103,6 @@ func getPermissionsForRelation(relation string) []PermissionRequest {
 		{"entity", "Entity access"},
 		{"integration", "Integration access"},
 		{"event", "Event access"},
-		{"track", "Track access"},
 	}
 
 	var permissions []PermissionRequest
