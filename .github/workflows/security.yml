@@ -11,8 +11,9 @@ on:
 
 permissions: {}
 
+# Only pull request runs share a group, so push and scheduled scans are never cancelled.
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
+  group: security-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -33,6 +34,7 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
+          fail-on-scopes: runtime, development, unknown
           comment-summary-in-pr: never
 
   semgrep:
@@ -77,12 +79,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The TruffleHog action limits pull request and push scans to the event's
+      # commit range, so the image is run directly to cover the full history.
+      # Lob is excluded because it false-verifies on test_-prefixed pytest names.
       - name: Scan committed history for credentials
-        uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11 # v3.96.0
-        with:
-          path: ./
-          version: "3.96.0"
-          extra_args: --results=verified,unknown
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/repo" \
+            trufflesecurity/trufflehog:3.96.0@sha256:aa821cf4ace8861c7d096d83818cdf7bb9719028a52d37a52eaad44086a52577 \
+            git file:///repo --results=verified,unknown --exclude-detectors=lob --fail --no-update --github-actions
 
   osv:
     name: OSV scan
