@@ -230,7 +230,7 @@ func TestGetOrganization_NotFound(t *testing.T) {
 // ============================================================================
 
 func TestGetPermissionsForRelation_AllResourceTypes(t *testing.T) {
-	expectedTypes := []string{"org", "feed", "entity", "integration", "event", "track"}
+	expectedTypes := []string{"org", "feed", "entity", "integration", "event"}
 
 	for _, relation := range []string{"viewer", "operator", "admin"} {
 		perms := getPermissionsForRelation(relation)
